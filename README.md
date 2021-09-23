@@ -26,6 +26,9 @@ $ docker rm -f $(docker ps -aq)
 # ビルド & コンテナの起動
 $ docker-compose up -d
 
+# コンテナに入る
+$ docker-compose exec podcast-server bash
+
 # コンテナの停止
 $ docker-compose down
 ```
