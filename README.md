@@ -4,6 +4,8 @@
 
 ## 開発用コマンド（あとでforce-pushして消す🔥）
 
+### 通常の方法
+
 ```sh
 # コンテナのビルド
 $ docker build  -t podcast-server:0.0.1 .
@@ -16,4 +18,15 @@ $ docker exec -it podcast-server /bin/bash
 
 # すべてのコンテナを削除する💣
 $ docker rm -f $(docker ps -aq)
+```
+
+### docker-composeを使った方法
+
+```sh
+# ビルド & コンテナの起動
+$ docker-compose up -d
+
+# コンテナの停止
+$ docker-compose down
+```
 
