@@ -7,7 +7,7 @@ RUN apt update -y
 RUN apt install python3 -y -qq --no-install-recommends
 RUN apt install python3-pip -y -qq --no-install-recommends
 RUN pip3 install --upgrade pip
-
+RUN apt install vim -y -qq --no-install-recommends
 # copy applications
 COPY app/ /usr/src/app/
 
