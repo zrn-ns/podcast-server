@@ -6,3 +6,5 @@ services:
       dockerfile: Dockerfile
     ports:
       - "80:80"
+    volumes:
+      - ../music_files/:/volumes/music_files/
