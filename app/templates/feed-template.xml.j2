@@ -1,6 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-{% import time %}
-
 {#
   jsonの形式:
   {
@@ -12,7 +10,7 @@
         "title": "楽曲名",
         "date_text_rfc1123": "Wed, 22 Sep 2021 01:00:00 +0900",
         "md5": "613f47482432437a73db5839c5dd77ea",
-        "duration_seconds": 3600,
+        "duration_hhmmss": 0:29:55,
         "url": "http://localhost/path/to/music-file.mp3",
         "file_size_bytes": 51887712
       }, ...
@@ -41,7 +39,7 @@
       <dc:creator></dc:creator>
 
       <itunes:explicit>no</itunes:explicit>
-      <itunes:duration>{{ time.strftime('%H:%M:%S', time.gmtime(item.duration_seconds)) }}</itunes:duration>
+      <itunes:duration>{{ item.duration_hhmmss }}</itunes:duration>
       <enclosure url="{{ item.url }}" type="audio/mpeg" length="{{ item.file_size_bytes }}" />
     </item>
 {% endfor %}
