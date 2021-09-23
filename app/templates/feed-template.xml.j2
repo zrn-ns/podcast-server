@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+{% import time %}
+
+{#
+  jsonの形式:
+  {
+    "channel": {
+      "title": "番組名"
+    },
+    "items": [
+      {
+        "title": "楽曲名",
+        "date_text_rfc1123": "Wed, 22 Sep 2021 01:00:00 +0900",
+        "md5": "613f47482432437a73db5839c5dd77ea",
+        "duration_seconds": 3600,
+        "url": "http://localhost/path/to/music-file.mp3",
+        "file_size_bytes": 51887712
+      }, ...
+    ]
+  }
+ #}
+
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:media="http://search.yahoo.com/mrss/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>{{ channel.title }}</title>
+    <description></description>
+    <link></link>
+    <atom:link href="" rel="self" type="application/rss+xml" />
+    <itunes:explicit>no</itunes:explicit>
+    <itunes:image href="../thumbs/music.png" />
+    <itunes:category text="Music"/>
+    <language>ja</language>
+
+{% for item in items %}
+    <item>
+      <title>{{ item.title }}</title>
+      <description></description>
+      <pubDate>{{ item.date_text_rfc1123 }}</pubDate>
+      <link></link>
+      <guid isPermaLink="false">{{ item.md5 }}</guid>
+      <dc:creator></dc:creator>
+
+      <itunes:explicit>no</itunes:explicit>
+      <itunes:duration>{{ time.strftime('%H:%M:%S', time.gmtime(item.duration_seconds)) }}</itunes:duration>
+      <enclosure url="{{ item.url }}" type="audio/mpeg" length="{{ item.file_size_bytes }}" />
+    </item>
+{% endfor %}
+
+  </channel>
+</rss>
