@@ -105,7 +105,7 @@ class TemplateRenderer:
                 "date_text_rfc1123": format_date_time(music_info.created_timestamp),
                 "md5": music_info.md5(),
                 "duration_hhmmss": time.strftime('%H:%M:%S', time.gmtime(music_info.duration_seconds)),
-                "url": "../" + music_info.relative_path_to_htdocs,
+                "url": "../" + str(music_info.relative_path_to_htdocs),
                 "file_size_bytes": music_info.file_size_bytes,
             })
 
