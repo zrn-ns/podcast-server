@@ -17,6 +17,7 @@ from email.utils import formatdate
 import hashlib
 import time
 from typing import List, Dict
+import socket
 
 @dataclass
 class MusicInfo:
@@ -24,7 +25,7 @@ class MusicInfo:
     album_name: str = ""
     title: str = ""
     duration_seconds: int = ""
-    relative_path_to_htdocs: str = ""
+    absolute_url: str = ""
     file_size_bytes: int = 0
     created_timestamp: int = 0
 
@@ -49,12 +50,15 @@ class FileIO:
         for extension in FileIO.music_extensions:
             music_file_fullpaths.extend(glob.glob(FileIO.music_files_dir_path + "/**/*" + extension))
 
+        # 💩httpとか書いちゃってる微妙さ。ホスト名は外部から渡すとか、なんか別のやり方があると思うが、とりあえず突貫工事
+        host_url = "http://" + str(socket.gethostbyname(socket.gethostname())) + "/"
+
         # フルパスの一覧からMusicInfoのリストを生成
         music_info_list: List[MusicInfo] = []
         for fullpath in music_file_fullpaths:
             # ファイルごとのメタデータを取得して、MusicInfoに情報を追加
             file = eyed3.load(fullpath)
-            relative_path_to_htdocs = pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path)
+            absolute_url = host_url + str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path))
             file_size_bytes = os.path.getsize(fullpath)
 
             music_info = MusicInfo()
@@ -62,7 +66,7 @@ class FileIO:
             music_info.album_name = file.tag.album
             music_info.title = file.tag.title
             music_info.duration_seconds = file.info.time_secs
-            music_info.relative_path_to_htdocs = relative_path_to_htdocs
+            music_info.absolute_url = absolute_url
             music_info.file_size_bytes = file_size_bytes
             music_info.created_timestamp = os.path.getctime(fullpath)
             music_info_list.append(music_info)
@@ -105,7 +109,7 @@ class TemplateRenderer:
                 "date_text_rfc1123": format_date_time(music_info.created_timestamp),
                 "md5": music_info.md5(),
                 "duration_hhmmss": time.strftime('%H:%M:%S', time.gmtime(music_info.duration_seconds)),
-                "url": "../" + str(music_info.relative_path_to_htdocs),
+                "url": music_info.absolute_url,
                 "file_size_bytes": music_info.file_size_bytes,
             })
 
