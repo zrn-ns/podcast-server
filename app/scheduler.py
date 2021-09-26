@@ -6,6 +6,6 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 scheduler = BlockingScheduler()
-scheduler.add_job(FeedGenerator.generate, CronTrigger.from_crontab('15 * * * *'))
+scheduler.add_job(FeedGenerator.generate, CronTrigger.from_crontab('*/15 * * * *'))
 
 scheduler.start()
