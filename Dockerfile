@@ -7,12 +7,12 @@ ARG APP_ROOT_URL="http://localhost:80/"
 ENV APP_ROOT_URL=$APP_ROOT_URL
 
 # Install python and pip
-RUN apt update -y
-RUN apt install python3 -y -qq --no-install-recommends
-RUN apt install python3-pip -y -qq --no-install-recommends
-RUN apt install python3-setuptools -y -qq --no-install-recommends
+RUN apt-get update -y
+RUN apt-get install python3 -y -qq --no-install-recommends
+RUN apt-get install python3-pip -y -qq --no-install-recommends
+RUN apt-get install python3-setuptools -y -qq --no-install-recommends
 RUN pip3 install --upgrade pip
-RUN apt install vim -y -qq --no-install-recommends
+RUN apt-get install vim -y -qq --no-install-recommends
 
 # copy applications
 COPY app/ /usr/src/app/
@@ -26,5 +26,4 @@ COPY htdocs /usr/local/apache2/htdocs
 # tell the port number the container should expose
 EXPOSE 80
 
-CMD ["/usr/src/app/startup.sh"] 
-
+CMD ["/usr/src/app/startup.sh"]
