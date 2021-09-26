@@ -17,6 +17,7 @@ from email.utils import formatdate
 import hashlib
 import time
 from typing import List, Dict
+import urllib
 
 # アプリのルートURL(例: http://hogehoge.local:80/)
 app_root_url: str = os.environ["APP_ROOT_URL"]
@@ -59,7 +60,8 @@ class FileIO:
         for fullpath in music_file_fullpaths:
             # ファイルごとのメタデータを取得して、MusicInfoに情報を追加
             file = eyed3.load(fullpath)
-            absolute_url = app_root_url + str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path))
+            relative_path_escaped = urllib.parse.quote(str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path)))
+            absolute_url = app_root_url + relative_path_escaped
             file_size_bytes = os.path.getsize(fullpath)
 
             music_info = MusicInfo()
