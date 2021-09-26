@@ -8,3 +8,5 @@ services:
       - "80:80"
     volumes:
       - ../music_files/:/volumes/music_files/
+    environment:
+      - APP_ROOT_URL=http://192.168.11.14:80/

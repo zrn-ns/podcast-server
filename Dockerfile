@@ -3,8 +3,8 @@ FROM httpd:2.4
 MAINTAINER zrn-ns
 
 # アプリのルートURLを引数として受け取る
-ARG app_root_url="http://192.168.11.14:80/"
-ENV APP_ROOT_URL=$app_root_url
+ARG APP_ROOT_URL="http://localhost:80/"
+ENV APP_ROOT_URL=$APP_ROOT_URL
 
 # Install python and pip
 RUN apt update -y
