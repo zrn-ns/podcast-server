@@ -3,7 +3,8 @@
   jsonの形式:
   {
     "channel": {
-      "title": "番組名"
+      "title": "番組名",
+      "thumbnail_url": "http://localhost/path/to/thumbnail.png"
     },
     "items": [
       {
@@ -13,6 +14,7 @@
         "duration_hhmmss": 0:29:55,
         "url": "http://localhost/path/to/music-file.mp3",
         "file_size_bytes": 51887712
+        "thumbnail_url": "http://localhost/path/to/thumbnail.png"
       }, ...
     ]
   }
@@ -25,7 +27,7 @@
     <link></link>
     <atom:link href="" rel="self" type="application/rss+xml" />
     <itunes:explicit>no</itunes:explicit>
-    <itunes:image href="../thumbs/music.png" />
+    <itunes:image href="{{ channel.thumbnail_url }}" />
     <itunes:category text="Music"/>
     <language>ja</language>
 
@@ -40,6 +42,7 @@
 
       <itunes:explicit>no</itunes:explicit>
       <itunes:duration>{{ item.duration_hhmmss }}</itunes:duration>
+      <itunes:image href="{{ item.thumbnail_url }}" />
       <enclosure url="{{ item.url }}" type="audio/mpeg" length="{{ item.file_size_bytes }}" />
     </item>
 {% endfor %}

@@ -33,6 +33,7 @@ class MusicInfo:
     absolute_url: str = ""
     file_size_bytes: int = 0
     created_timestamp: int = 0
+    thumbnail_url: str = ""
 
     def md5(self) -> str:
         return hashlib.md5((self.album_name + self.title).encode()).hexdigest()
@@ -47,6 +48,10 @@ class FileIO:
     templates_dir_path = "/usr/src/app/templates/"
     index_html_template_filename = "index-template.html.j2"
     feed_template_filename = "feed-template.xml.j2"
+
+    thumbnail_dir_name = "thumbs"
+    thumbnail_dir_path = htdocs_dir_path + thumbnail_dir_name + "/"
+    default_thumbnail_url = app_root_url + thumbnail_dir_name + "/music.png"
 
     @staticmethod
     def get_music_list() -> List[MusicInfo]:
@@ -72,6 +77,26 @@ class FileIO:
             music_info.absolute_url = absolute_url
             music_info.file_size_bytes = file_size_bytes
             music_info.created_timestamp = os.path.getctime(fullpath)
+
+            # サムネイル画像を保存する
+            thumbnail_url = ""
+            for image in file.tag.images:
+                extension = ""
+                if image.mime_type == "image/jpeg":
+                    extension = "jpg"
+                if image.mime_type == "image/png":
+                    extension = "png"
+                if extension != "":
+                    filename = music_info.md5() + "." + extension
+                    thumbnail_path = FileIO.thumbnail_dir_path + filename
+                    thumbnail_url = app_root_url + FileIO.thumbnail_dir_name + "/" + filename
+                    if not os.path.exists(thumbnail_path):
+                        with open(thumbnail_path, "wb") as fo:
+                            fo.write(image.image_data)
+                    break
+            if thumbnail_url != "":
+                music_info.thumbnail_url = thumbnail_url
+
             music_info_list.append(music_info)
 
         return music_info_list
@@ -114,11 +139,13 @@ class TemplateRenderer:
                 "duration_hhmmss": time.strftime('%H:%M:%S', time.gmtime(music_info.duration_seconds)),
                 "url": music_info.absolute_url,
                 "file_size_bytes": music_info.file_size_bytes,
+                "thumbnail_url": music_info.thumbnail_url
             })
 
         rendering_params = {
             "channel": {
-              "title": album_name
+              "title": album_name,
+              "thumbnail_url": FileIO.default_thumbnail_url
             },
             "items": items
           }
