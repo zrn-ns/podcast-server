@@ -147,7 +147,7 @@ class TemplateRenderer:
         rendering_params = {
             "channel": {
               "title": album_name,
-              "thumbnail_url": FileIO.default_thumbnail_url
+              "thumbnail_url": music_info_list[0].thumbnail_url
             },
             "items": items
           }
