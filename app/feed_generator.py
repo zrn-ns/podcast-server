@@ -5,7 +5,7 @@ import pathlib
 import yaml
 import logging
 import eyed3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from wsgiref.handlers import format_date_time
 import glob
 from dataclasses import dataclass
@@ -20,6 +20,8 @@ from typing import List, Dict
 
 # アプリのルートURL(例: http://hogehoge.local:80/)
 app_root_url: str = os.environ["APP_ROOT_URL"]
+
+timezone = timezone(timedelta(hours=9))
 
 @dataclass
 class MusicInfo:
@@ -131,7 +133,7 @@ class TemplateRenderer:
               "title": album_name
             })
 
-        rendering_params = { "feeds": feeds }
+        rendering_params = { "last_update_date": datetime.now(timezone), "feeds": feeds }
 
         html = FileIO.get_index_html_template().render(rendering_params)
         FileIO.output_index_html(html)
