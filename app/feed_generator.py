@@ -17,7 +17,9 @@ from email.utils import formatdate
 import hashlib
 import time
 from typing import List, Dict
-import socket
+
+# アプリのルートURL(例: http://hogehoge.local:80/)
+app_root_url: str = os.environ["APP_ROOT_URL"]
 
 @dataclass
 class MusicInfo:
@@ -50,15 +52,12 @@ class FileIO:
         for extension in FileIO.music_extensions:
             music_file_fullpaths.extend(glob.glob(FileIO.music_files_dir_path + "/**/*" + extension))
 
-        # 💩httpとか書いちゃってる微妙さ。ホスト名は外部から渡すとか、なんか別のやり方があると思うが、とりあえず突貫工事
-        host_url = "http://" + str(socket.gethostbyname(socket.gethostname())) + "/"
-
         # フルパスの一覧からMusicInfoのリストを生成
         music_info_list: List[MusicInfo] = []
         for fullpath in music_file_fullpaths:
             # ファイルごとのメタデータを取得して、MusicInfoに情報を追加
             file = eyed3.load(fullpath)
-            absolute_url = host_url + str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path))
+            absolute_url = app_root_url + str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path))
             file_size_bytes = os.path.getsize(fullpath)
 
             music_info = MusicInfo()

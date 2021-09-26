@@ -2,6 +2,10 @@ FROM httpd:2.4
 
 MAINTAINER zrn-ns
 
+# アプリのルートURLを引数として受け取る
+ARG app_root_url="http://192.168.11.14:80/"
+ENV APP_ROOT_URL=$app_root_url
+
 # Install python and pip
 RUN apt update -y
 RUN apt install python3 -y -qq --no-install-recommends
