@@ -7,12 +7,9 @@ ARG APP_ROOT_URL="http://localhost:80/"
 ENV APP_ROOT_URL=$APP_ROOT_URL
 
 # Install python and pip
-RUN apt-get update -y
-RUN apt-get install python3 -y -qq --no-install-recommends
-RUN apt-get install python3-pip -y -qq --no-install-recommends
-RUN apt-get install python3-setuptools -y -qq --no-install-recommends
+RUN apt-get update
+RUN apt-get install python3 python3-pip vim python3-setuptools -y -qq --no-install-recommends
 RUN pip3 install --upgrade pip
-RUN apt-get install vim -y -qq --no-install-recommends
 
 # copy applications
 COPY app/ /usr/src/app/
