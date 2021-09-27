@@ -60,7 +60,7 @@ class FileIO:
     music_extensions: List[str] = ["mp3", "m4a"]
     index_html_file_path = htdocs_dir_path + "index.html"
     output_xml_dir_path = htdocs_dir_path + feeds_dir_name + "/"
-    feeds_dir_url = htdocs_dir_path + feeds_dir_name + "/"
+    feeds_dir_url = app_root_url + feeds_dir_name + "/"
 
     templates_dir_path = "/usr/src/app/templates/"
     index_html_template_filename = "index-template.html.j2"
