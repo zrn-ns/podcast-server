@@ -38,12 +38,29 @@ class MusicInfo:
     def md5(self) -> str:
         return hashlib.md5((self.album_name + self.title).encode()).hexdigest()
 
+@dataclass
+class FeedInfo:
+    album_name: str
+
+    def hash(self) -> str:
+        return hashlib.md5(self.album_name.encode()).hexdigest()
+
+    def url(self) -> str:
+        hash = self.hash()
+        return FileIO.feeds_dir_url + hash + ".xml"
+
+    def file_path(self) -> str:
+        hash = self.hash()
+        return FileIO.output_xml_dir_path + hash + ".xml"
+
 class FileIO:
+    feeds_dir_name = "feeds"
     htdocs_dir_path = "/usr/local/apache2/htdocs/"
     music_files_dir_path = htdocs_dir_path + "music_files/"
     music_extensions: List[str] = ["mp3", "m4a"]
     index_html_file_path = htdocs_dir_path + "index.html"
-    output_xml_dir_path = htdocs_dir_path + "feeds/"
+    output_xml_dir_path = htdocs_dir_path + feeds_dir_name + "/"
+    feeds_dir_url = htdocs_dir_path + feeds_dir_name + "/"
 
     templates_dir_path = "/usr/src/app/templates/"
     index_html_template_filename = "index-template.html.j2"
@@ -116,8 +133,8 @@ class FileIO:
         return env.get_template(FileIO.index_html_template_filename)
 
     @staticmethod
-    def output_feed_xml(xml_text: str, album_name: str):
-        xml_file_path = FileIO.output_xml_dir_path + album_name + ".xml"
+    def output_feed_xml(xml_text: str, feed_info: FeedInfo):
+        xml_file_path = feed_info.file_path()
         with open(xml_file_path, "w") as f:
             f.write(xml_text)
 
@@ -130,7 +147,7 @@ class FileIO:
 
 class TemplateRenderer:
     @staticmethod
-    def render_feed_xml(album_name: str, music_info_list: [MusicInfo]):
+    def render_feed_xml(feed_info: FeedInfo, music_info_list: [MusicInfo]):
         items: List[Dict[str: Any]] = []
 
         for music_info in music_info_list:
@@ -146,22 +163,22 @@ class TemplateRenderer:
 
         rendering_params = {
             "channel": {
-              "title": album_name,
+              "title": feed_info.album_name,
               "thumbnail_url": music_info_list[0].thumbnail_url
             },
             "items": items
           }
 
         xml = FileIO.get_feed_xml_template().render(rendering_params)
-        FileIO.output_feed_xml(xml, album_name)
+        FileIO.output_feed_xml(xml, feed_info)
 
     @staticmethod
-    def render_index_html(album_names: List[str]):
+    def render_index_html(feed_info_list: List[FeedInfo]):
         feeds: List[Dict[str: Any]] = []
-        for album_name in album_names:
+        for feed_info in feed_info_list:
             feeds.append({
-              "path": "feeds/" + album_name + ".xml",
-              "title": album_name
+              "path": feed_info.url(),
+              "title": feed_info.album_name
             })
 
         rendering_params = { "last_update_date": datetime.now(timezone), "feeds": feeds }
@@ -176,13 +193,14 @@ class FeedGenerator:
         music_list_grouped_by_album_name = groupby(sorted(music_list, key=lambda e: e.album_name), key=lambda e: e.album_name)
         template = FileIO.get_feed_xml_template()
 
-        all_albums: str = []
+        all_feeds: [FeedInfo] = []
         for key, music_list in music_list_grouped_by_album_name:
-            all_albums.append(key)
+            feed = FeedInfo(album_name=key)
+            all_feeds.append(feed)
             sorted_music_list: List[MusicInfo] = sorted(list(music_list), key=lambda e: e.title, reverse=True)
-            TemplateRenderer.render_feed_xml(key, sorted_music_list)
+            TemplateRenderer.render_feed_xml(feed, sorted_music_list)
 
-        TemplateRenderer.render_index_html(all_albums)
+        TemplateRenderer.render_index_html(all_feeds)
 
 if __name__ == "__main__":
     FeedGenerator.generate()
