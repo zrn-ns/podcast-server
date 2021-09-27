@@ -58,7 +58,7 @@ class FileIO:
         # ファイルのフルパスの一覧を生成
         music_file_fullpaths: List[str] = []
         for extension in FileIO.music_extensions:
-            music_file_fullpaths.extend(glob.glob(FileIO.music_files_dir_path + "/**/*" + extension))
+            music_file_fullpaths.extend(glob.glob(FileIO.music_files_dir_path + "/**/*" + extension, recursive=True))
 
         # フルパスの一覧からMusicInfoのリストを生成
         music_info_list: List[MusicInfo] = []
