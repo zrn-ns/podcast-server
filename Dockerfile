@@ -6,6 +6,10 @@ MAINTAINER zrn-ns
 ARG APP_ROOT_URL="http://localhost:80/"
 ENV APP_ROOT_URL=$APP_ROOT_URL
 
+# crontabの設定を引数として受け取る（デフォルトは毎日1:00, 13:00）
+ARG CRONTAB_SETTING_TEXT="0 1,13 * * *"
+ENV CRONTAB_SETTING_TEXT=$CRONTAB_SETTING_TEXT
+
 # Install python and pip
 RUN apt-get update
 RUN apt-get install python3 python3-pip vim python3-setuptools -y -qq --no-install-recommends
