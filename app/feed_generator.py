@@ -97,7 +97,7 @@ class FileIO:
             if thumbnail_url != "":
                 music_info.thumbnail_url = thumbnail_url
             else:
-                music_info.thumbnail_url = default_thumbnail_url
+                music_info.thumbnail_url = FileIO.default_thumbnail_url
 
             music_info_list.append(music_info)
 
