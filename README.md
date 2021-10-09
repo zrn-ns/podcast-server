@@ -1,6 +1,6 @@
 # podcast-server
 
-特定のディレクトリ内のmp3ファイルからRSSフィードを自動生成してくれるPodcastサーバソフト。
+特定のディレクトリ内のファイルからRSSフィードを自動生成してくれるPodcastサーバソフト。
 
 <img width="640" alt="ss_feed_list" src="https://user-images.githubusercontent.com/5319256/136659235-f189cad4-e8e0-4225-a726-add6af52f5d0.png">
 <img width="640" alt="ss_single_feed" src="https://user-images.githubusercontent.com/5319256/136659238-5739f6fb-e84b-497f-8ede-32406ba56d99.png">
