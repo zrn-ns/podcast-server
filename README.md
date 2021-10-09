@@ -25,7 +25,7 @@ $ docker pull zrnns/podcast-server
 # - 配信のルートURLを APP_ROOT_URL に設定する（rssフィード内でmp3ファイルを参照する際必要となる）
 # - RSSフィードの生成の頻度を CRONTAB_SETTING_TEXT に設定する
 # - ポートのマッピングを行う(任意のポート->80番ポート)
-$ docker run -d -v ~/mp3files/:/volumes/music_files -e APP_ROOT_URL=http://localhost:8080/ -e CRONTAB_SETTING_TEXT="*/15 * * * *" -p 8080:80 zrnns/podcast-server
+$ docker run -it -v ~/mp3files/:/volumes/music_files -e APP_ROOT_URL=http://localhost:8080/ -e CRONTAB_SETTING_TEXT="*/15 * * * *" -p 8080:80 zrnns/podcast-server
 
 # フィードが生成されるまで待ってから（数秒~数分程度）待ってから、ブラウザ等でlocalhost:8080 にアクセスすると、フィードが生成されている。
 $ open http://localhost:8080/
