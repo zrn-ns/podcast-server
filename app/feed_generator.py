@@ -99,7 +99,7 @@ class FileIO:
             thumbnail_url = ""
             for image in file.tag.images:
                 extension = ""
-                if image.mime_type == "image/jpeg":
+                if image.mime_type in ["image/jpeg", "image/jpg"]:
                     extension = "jpg"
                 if image.mime_type == "image/png":
                     extension = "png"
