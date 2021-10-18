@@ -86,6 +86,18 @@ class FileIO:
             absolute_url = app_root_url + relative_path_escaped
             file_size_bytes = os.path.getsize(fullpath)
 
+            if file is None:
+                print(f"[warning] { fullpath } was skippbed(id3 info is none)")
+                continue
+
+            if file.tag is None:
+                print(f"[warning] { fullpath } was skippbed(tag is none)")
+                continue
+
+            if file.tag.album is None:
+                print(f"[warning] { fullpath } was skippbed(album_name is none)")
+                continue
+
             music_info = MusicInfo()
             music_info.fullpath = fullpath
             music_info.album_name = file.tag.album
