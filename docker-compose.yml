@@ -10,3 +10,4 @@ services:
       - ~/podcast_music_files/:/volumes/music_files/
     environment:
       - APP_ROOT_URL=http://localhost:8080/
+    tty: true
