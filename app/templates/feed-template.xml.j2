@@ -22,18 +22,18 @@
 
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:media="http://search.yahoo.com/mrss/" xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
-    <title>{{ channel.title }}</title>
+    <title>{{ channel.title | escape }}</title>
     <description></description>
     <link></link>
     <atom:link href="" rel="self" type="application/rss+xml" />
     <itunes:explicit>no</itunes:explicit>
-    <itunes:image href="{{ channel.thumbnail_url }}" />
+    <itunes:image href="{{ channel.thumbnail_url | escape }}" />
     <itunes:category text="Music"/>
     <language>ja</language>
 
 {% for item in items %}
     <item>
-      <title>{{ item.title }}</title>
+      <title>{{ item.title | escape }}</title>
       <description></description>
       <pubDate>{{ item.date_text_rfc1123 }}</pubDate>
       <link></link>
@@ -42,8 +42,8 @@
 
       <itunes:explicit>no</itunes:explicit>
       <itunes:duration>{{ item.duration_hhmmss }}</itunes:duration>
-      <itunes:image href="{{ item.thumbnail_url }}" />
-      <enclosure url="{{ item.url }}" type="audio/mpeg" length="{{ item.file_size_bytes }}" />
+      <itunes:image href="{{ item.thumbnail_url | escape }}" />
+      <enclosure url="{{ item.url | escape }}" type="audio/mpeg" length="{{ item.file_size_bytes }}" />
     </item>
 {% endfor %}
 

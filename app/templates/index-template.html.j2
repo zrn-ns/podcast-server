@@ -20,7 +20,7 @@
         <p>last updated: {{ last_update_date.strftime('%Y-%m-%d %H:%M:%S') }}<p>
         <ul>
 {% for feed in feeds %}
-            <li><a href="{{ feed.path }}">{{ feed.title }}</a></li>
+            <li><a href="{{ feed.path }}">{{ feed.title | escape }}</a></li>
 {% endfor %}
         </ul>
     </body>
