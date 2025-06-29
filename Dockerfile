@@ -9,13 +9,13 @@ ENV APP_ROOT_URL=$APP_ROOT_URL
 # Install python and pip
 RUN apt-get update
 RUN apt-get install python3 python3-pip vim python3-setuptools -y -qq --no-install-recommends
-RUN pip3 install --upgrade pip
+RUN pip3 install --upgrade pip --break-system-packages
 
 # copy applications
 COPY app/ /usr/src/app/
 
 # install Python modules needed by the Python app
-RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt
+RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt --break-system-packages
 
 # copy files required for the app to run
 COPY htdocs /usr/local/apache2/htdocs

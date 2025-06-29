@@ -133,23 +133,62 @@ class MusicFileHandler(FileSystemEventHandler):
             self.cleanup_file_tracking(file_path)
 
 class FileWatcher:
-    """ファイル監視システム"""
+    """ファイル監視システム（イベントベース + ポーリング）"""
     
-    def __init__(self, watch_directory: str):
+    def __init__(self, watch_directory: str, polling_interval: int = 30):
         self.watch_directory = watch_directory
         self.observer = Observer()
         self.handler = MusicFileHandler()
+        self.polling_interval = polling_interval
+        self.known_files = set()
         
+    def scan_for_new_files(self):
+        """ポーリングによる新しいファイルの検索"""
+        try:
+            current_files = set()
+            for extension in ['.mp3', '.m4a']:
+                import glob
+                files = glob.glob(os.path.join(self.watch_directory, f"**/*{extension}"), recursive=True)
+                current_files.update(files)
+            
+            # 新しいファイルをチェック
+            new_files = current_files - self.known_files
+            for new_file in new_files:
+                print(f"[file_watcher] Polling detected new file: {new_file}")
+                self.handler._handle_file_created(new_file)
+            
+            # 削除されたファイルをチェック
+            deleted_files = self.known_files - current_files
+            for deleted_file in deleted_files:
+                print(f"[file_watcher] Polling detected deleted file: {deleted_file}")
+                with self.handler.lock:
+                    FeedGenerator.remove_music_file(deleted_file)
+                    self.handler.cleanup_file_tracking(deleted_file)
+                    self.handler.processed_files.discard(deleted_file)
+            
+            self.known_files = current_files
+            
+        except Exception as e:
+            print(f"[file_watcher] Error in polling: {e}")
+    
     def start(self):
-        """監視を開始"""
+        """監視を開始（イベントベース + ポーリング）"""
         print(f"[file_watcher] Starting file watcher for directory: {self.watch_directory}")
+        print(f"[file_watcher] Polling interval: {self.polling_interval} seconds")
+        
+        # 初回スキャンで既存ファイルを記録
+        self.scan_for_new_files()
+        
+        # イベントベース監視を開始
         self.observer.schedule(self.handler, self.watch_directory, recursive=True)
         self.observer.start()
         print(f"[file_watcher] File watcher started")
         
         try:
             while True:
-                time.sleep(1)
+                time.sleep(self.polling_interval)
+                print(f"[file_watcher] Running periodic scan...")
+                self.scan_for_new_files()
         except KeyboardInterrupt:
             self.stop()
     
@@ -169,6 +208,6 @@ if __name__ == "__main__":
     FeedGenerator.generate()
     print("[file_watcher] Initial feeds generated")
     
-    # ファイル監視を開始
-    watcher = FileWatcher(watch_dir)
+    # ファイル監視を開始（本番用ポーリング間隔: 30秒）
+    watcher = FileWatcher(watch_dir, polling_interval=30)
     watcher.start() 
