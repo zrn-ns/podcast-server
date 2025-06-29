@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import pathlib
+import logging
 import eyed3
 from datetime import datetime, timedelta, timezone
 from wsgiref.handlers import format_date_time
@@ -16,6 +17,13 @@ import time
 from typing import List, Dict, Optional
 import urllib
 import pickle
+
+# ロガー設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # アプリのルートURL(例: http://hogehoge.local:80/)
 app_root_url: str = os.environ["APP_ROOT_URL"]
@@ -88,15 +96,15 @@ class FileIO:
             file_size_bytes = os.path.getsize(fullpath)
 
             if file is None:
-                print(f"[warning] { fullpath } was skippbed(id3 info is none)")
+                logger.warning(f"{fullpath} was skipped (id3 info is none)")
                 continue
 
             if file.tag is None:
-                print(f"[warning] { fullpath } was skippbed(tag is none)")
+                logger.warning(f"{fullpath} was skipped (tag is none)")
                 continue
 
             if file.tag.album is None:
-                print(f"[warning] { fullpath } was skippbed(album_name is none)")
+                logger.warning(f"{fullpath} was skipped (album_name is none)")
                 continue
 
             music_info = MusicInfo()
@@ -178,7 +186,7 @@ class FileIO:
         try:
             # ファイルの存在とアクセス可能性を確認
             if not os.path.exists(fullpath) or not os.access(fullpath, os.R_OK):
-                print(f"[warning] {fullpath} is not accessible")
+                logger.warning(f"{fullpath} is not accessible")
                 return None
                 
             file = eyed3.load(fullpath)
@@ -187,7 +195,7 @@ class FileIO:
             file_size_bytes = os.path.getsize(fullpath)
 
             if file is None or file.tag is None or file.tag.album is None:
-                print(f"[warning] {fullpath} has no valid ID3 tag information")
+                logger.warning(f"{fullpath} has no valid ID3 tag information")
                 return None
 
             music_info = MusicInfo()
@@ -223,7 +231,7 @@ class FileIO:
             return music_info
             
         except Exception as e:
-            print(f"[warning] Error reading file {fullpath}: {e}")
+            logger.warning(f"Error reading file {fullpath}: {e}")
             return None
 
 
@@ -279,12 +287,12 @@ class FeedGenerator:
     @staticmethod
     def add_music_file(file_path: str):
         """新しい音楽ファイルを追加し、フィードを差分更新"""
-        print(f"[info] Adding music file: {file_path}")
+        logger.info(f"Adding music file: {file_path}")
         
         # 新しいファイルの情報を取得
         new_music_info = FileIO.get_music_info_from_file(file_path)
         if new_music_info is None:
-            print(f"[warning] {file_path} was skipped (invalid music file)")
+            logger.warning(f"{file_path} was skipped (invalid music file)")
             return
 
         # 既存のインデックスを読み込み
@@ -293,7 +301,7 @@ class FeedGenerator:
         # 重複チェック
         for existing in existing_music_list:
             if existing.fullpath == file_path:
-                print(f"[info] File already exists in index: {file_path}")
+                logger.info(f"File already exists in index: {file_path}")
                 return
 
         # インデックスに追加
@@ -310,7 +318,7 @@ class FeedGenerator:
     @staticmethod
     def remove_music_file(file_path: str):
         """音楽ファイルを削除し、フィードを差分更新"""
-        print(f"[info] Removing music file: {file_path}")
+        logger.info(f"Removing music file: {file_path}")
         
         # 既存のインデックスを読み込み
         existing_music_list = FileIO.load_music_index()
@@ -325,7 +333,7 @@ class FeedGenerator:
                 updated_music_list.append(music)
 
         if removed_music is None:
-            print(f"[info] File not found in index: {file_path}")
+            logger.info(f"File not found in index: {file_path}")
             return
 
         # インデックスを更新

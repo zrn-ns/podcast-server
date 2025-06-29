@@ -2,12 +2,20 @@
 
 import os
 import time
+import logging
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from feed_generator import FeedGenerator, FileIO
 import threading
 from typing import Dict
 import stat
+
+# ロガー設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class MusicFileHandler(FileSystemEventHandler):
     """音楽ファイルの変更を監視するハンドラー"""
@@ -100,7 +108,7 @@ class MusicFileHandler(FileSystemEventHandler):
         """ファイルが削除された時の処理"""
         if not event.is_directory and self.is_music_file(event.src_path):
             with self.lock:
-                print(f"[file_watcher] File deleted: {event.src_path}")
+                logger.info(f"File deleted: {event.src_path}")
                 # 追跡情報をクリーンアップ
                 self.cleanup_file_tracking(event.src_path)
                 self.processed_files.discard(event.src_path)
@@ -109,7 +117,7 @@ class MusicFileHandler(FileSystemEventHandler):
     def _handle_file_created(self, file_path: str):
         """ファイル作成処理を別スレッドで実行"""
         try:
-            print(f"[file_watcher] Detected file: {file_path}, waiting for write completion...")
+            logger.info(f"Detected file: {file_path}, waiting for write completion...")
             
             # ファイルの書き込み完了を待つ
             if self.is_file_write_complete(file_path):
@@ -119,16 +127,16 @@ class MusicFileHandler(FileSystemEventHandler):
                         return
                     
                     self.processed_files.add(file_path)
-                    print(f"[file_watcher] File write completed: {file_path}")
+                    logger.info(f"File write completed: {file_path}")
                     FeedGenerator.add_music_file(file_path)
                     # 追跡情報をクリーンアップ
                     self.cleanup_file_tracking(file_path)
             else:
-                print(f"[file_watcher] File write completion timeout: {file_path}")
+                logger.warning(f"File write completion timeout: {file_path}")
                 self.cleanup_file_tracking(file_path)
                 
         except Exception as e:
-            print(f"[file_watcher] Error handling file {file_path}: {e}")
+            logger.error(f"Error handling file {file_path}: {e}")
             self.cleanup_file_tracking(file_path)
 
 class FileWatcher:
@@ -153,13 +161,13 @@ class FileWatcher:
             # 新しいファイルをチェック
             new_files = current_files - self.known_files
             for new_file in new_files:
-                print(f"[file_watcher] Polling detected new file: {new_file}")
+                logger.info(f"Polling detected new file: {new_file}")
                 self.handler._handle_file_created(new_file)
             
             # 削除されたファイルをチェック
             deleted_files = self.known_files - current_files
             for deleted_file in deleted_files:
-                print(f"[file_watcher] Polling detected deleted file: {deleted_file}")
+                logger.info(f"Polling detected deleted file: {deleted_file}")
                 with self.handler.lock:
                     FeedGenerator.remove_music_file(deleted_file)
                     self.handler.cleanup_file_tracking(deleted_file)
@@ -168,12 +176,12 @@ class FileWatcher:
             self.known_files = current_files
             
         except Exception as e:
-            print(f"[file_watcher] Error in polling: {e}")
+            logger.error(f"Error in polling: {e}")
     
     def start(self):
         """監視を開始（イベントベース + ポーリング）"""
-        print(f"[file_watcher] Starting file watcher for directory: {self.watch_directory}")
-        print(f"[file_watcher] Polling interval: {self.polling_interval} seconds")
+        logger.info(f"Starting file watcher for directory: {self.watch_directory}")
+        logger.info(f"Polling interval: {self.polling_interval} seconds")
         
         # 初回スキャンで既存ファイルを記録
         self.scan_for_new_files()
@@ -181,31 +189,31 @@ class FileWatcher:
         # イベントベース監視を開始
         self.observer.schedule(self.handler, self.watch_directory, recursive=True)
         self.observer.start()
-        print(f"[file_watcher] File watcher started")
+        logger.info("File watcher started")
         
         try:
             while True:
                 time.sleep(self.polling_interval)
-                print(f"[file_watcher] Running periodic scan...")
+                logger.debug("Running periodic scan...")
                 self.scan_for_new_files()
         except KeyboardInterrupt:
             self.stop()
     
     def stop(self):
         """監視を停止"""
-        print(f"[file_watcher] Stopping file watcher")
+        logger.info("Stopping file watcher")
         self.observer.stop()
         self.observer.join()
-        print(f"[file_watcher] File watcher stopped")
+        logger.info("File watcher stopped")
 
 if __name__ == "__main__":
     # 監視対象ディレクトリ
     watch_dir = FileIO.music_files_dir_path
     
     # 初回起動時にフィード全体を生成
-    print("[file_watcher] Generating initial feeds...")
+    logger.info("Generating initial feeds...")
     FeedGenerator.generate()
-    print("[file_watcher] Initial feeds generated")
+    logger.info("Initial feeds generated")
     
     # ファイル監視を開始（本番用ポーリング間隔: 30秒）
     watcher = FileWatcher(watch_dir, polling_interval=30)
