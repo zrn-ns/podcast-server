@@ -1,9 +1,6 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 import os
 import pathlib
-import yaml
-import logging
 import eyed3
 from datetime import datetime, timedelta, timezone
 from wsgiref.handlers import format_date_time
@@ -16,7 +13,7 @@ from typing import Any
 from email.utils import formatdate
 import hashlib
 import time
-from typing import List, Dict
+from typing import List, Dict, Optional
 import urllib
 import pickle
 
@@ -176,7 +173,7 @@ class FileIO:
             return []
 
     @staticmethod
-    def get_music_info_from_file(fullpath: str) -> MusicInfo:
+    def get_music_info_from_file(fullpath: str) -> Optional[MusicInfo]:
         """単一の音楽ファイルからMusicInfoを生成"""
         try:
             # ファイルの存在とアクセス可能性を確認
@@ -232,7 +229,7 @@ class FileIO:
 
 class TemplateRenderer:
     @staticmethod
-    def render_feed_xml(feed_info: FeedInfo, music_info_list: [MusicInfo]):
+    def render_feed_xml(feed_info: FeedInfo, music_info_list: List[MusicInfo]):
         items: List[Dict[str: Any]] = []
 
         for music_info in music_info_list:
@@ -346,7 +343,7 @@ class FeedGenerator:
         """全フィードを再生成"""
         music_list_grouped_by_album_name = groupby(sorted(music_list, key=lambda e: e.album_name), key=lambda e: e.album_name)
         
-        all_feeds: [FeedInfo] = []
+        all_feeds: List[FeedInfo] = []
         for key, music_list in music_list_grouped_by_album_name:
             feed = FeedInfo(album_name=key)
             all_feeds.append(feed)
