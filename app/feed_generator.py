@@ -53,38 +53,38 @@ class FeedInfo:
 
     def url(self) -> str:
         hash = self.hash()
-        return FileIO.feeds_dir_url + hash + ".xml"
+        return f"{FileIO.feeds_dir_url}{hash}.xml"
 
     def file_path(self) -> str:
         hash = self.hash()
-        return FileIO.output_xml_dir_path + hash + ".xml"
+        return f"{FileIO.output_xml_dir_path}{hash}.xml"
 
 class FileIO:
     feeds_dir_name = "feeds"
     htdocs_dir_path = "/usr/local/apache2/htdocs/"
-    music_files_dir_path = htdocs_dir_path + "music_files/"
+    music_files_dir_path = f"{htdocs_dir_path}music_files/"
     music_extensions: List[str] = ["mp3", "m4a"]
-    index_html_file_path = htdocs_dir_path + "index.html"
-    output_xml_dir_path = htdocs_dir_path + feeds_dir_name + "/"
-    feeds_dir_url = app_root_url + feeds_dir_name + "/"
+    index_html_file_path = f"{htdocs_dir_path}index.html"
+    output_xml_dir_path = f"{htdocs_dir_path}{feeds_dir_name}/"
+    feeds_dir_url = f"{app_root_url}{feeds_dir_name}/"
 
     templates_dir_path = "/usr/src/app/templates/"
     index_html_template_filename = "index-template.html.j2"
     feed_template_filename = "feed-template.xml.j2"
 
     thumbnail_dir_name = "thumbs"
-    thumbnail_dir_path = htdocs_dir_path + thumbnail_dir_name + "/"
-    default_thumbnail_url = app_root_url + thumbnail_dir_name + "/music.png"
+    thumbnail_dir_path = f"{htdocs_dir_path}{thumbnail_dir_name}/"
+    default_thumbnail_url = f"{app_root_url}{thumbnail_dir_name}/music.png"
     
     # インデックスファイルのパス
-    index_file_path = htdocs_dir_path + "music_index.pkl"
+    index_file_path = f"{htdocs_dir_path}music_index.pkl"
 
     @staticmethod
     def get_music_list() -> List[MusicInfo]:
         # ファイルのフルパスの一覧を生成
         music_file_fullpaths: List[str] = []
         for extension in FileIO.music_extensions:
-            music_file_fullpaths.extend(glob.glob(FileIO.music_files_dir_path + "/**/*" + extension, recursive=True))
+            music_file_fullpaths.extend(glob.glob(f"{FileIO.music_files_dir_path}/**/*{extension}", recursive=True))
 
         # フルパスの一覧からMusicInfoのリストを生成
         music_info_list: List[MusicInfo] = []
@@ -92,7 +92,7 @@ class FileIO:
             # ファイルごとのメタデータを取得して、MusicInfoに情報を追加
             file = eyed3.load(fullpath)
             relative_path_escaped = urllib.parse.quote(str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path)))
-            absolute_url = app_root_url + relative_path_escaped
+            absolute_url = f"{app_root_url}{relative_path_escaped}"
             file_size_bytes = os.path.getsize(fullpath)
 
             if file is None:
@@ -125,9 +125,9 @@ class FileIO:
                 if image.mime_type == "image/png":
                     extension = "png"
                 if extension != "":
-                    filename = music_info.md5() + "." + extension
-                    thumbnail_path = FileIO.thumbnail_dir_path + filename
-                    thumbnail_url = app_root_url + FileIO.thumbnail_dir_name + "/" + filename
+                    filename = f"{music_info.md5()}.{extension}"
+                    thumbnail_path = f"{FileIO.thumbnail_dir_path}{filename}"
+                    thumbnail_url = f"{app_root_url}{FileIO.thumbnail_dir_name}/{filename}"
                     if not os.path.exists(thumbnail_path):
                         with open(thumbnail_path, "wb") as fo:
                             fo.write(image.image_data)
@@ -191,7 +191,7 @@ class FileIO:
                 
             file = eyed3.load(fullpath)
             relative_path_escaped = urllib.parse.quote(str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path)))
-            absolute_url = app_root_url + relative_path_escaped
+            absolute_url = f"{app_root_url}{relative_path_escaped}"
             file_size_bytes = os.path.getsize(fullpath)
 
             if file is None or file.tag is None or file.tag.album is None:
@@ -216,9 +216,9 @@ class FileIO:
                 if image.mime_type == "image/png":
                     extension = "png"
                 if extension != "":
-                    filename = music_info.md5() + "." + extension
-                    thumbnail_path = FileIO.thumbnail_dir_path + filename
-                    thumbnail_url = app_root_url + FileIO.thumbnail_dir_name + "/" + filename
+                    filename = f"{music_info.md5()}.{extension}"
+                    thumbnail_path = f"{FileIO.thumbnail_dir_path}{filename}"
+                    thumbnail_url = f"{app_root_url}{FileIO.thumbnail_dir_name}/{filename}"
                     if not os.path.exists(thumbnail_path):
                         with open(thumbnail_path, "wb") as fo:
                             fo.write(image.image_data)
