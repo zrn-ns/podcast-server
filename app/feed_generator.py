@@ -18,6 +18,7 @@ import hashlib
 import time
 from typing import List, Dict
 import urllib
+import pickle
 
 # アプリのルートURL(例: http://hogehoge.local:80/)
 app_root_url: str = os.environ["APP_ROOT_URL"]
@@ -69,6 +70,9 @@ class FileIO:
     thumbnail_dir_name = "thumbs"
     thumbnail_dir_path = htdocs_dir_path + thumbnail_dir_name + "/"
     default_thumbnail_url = app_root_url + thumbnail_dir_name + "/music.png"
+    
+    # インデックスファイルのパス
+    index_file_path = htdocs_dir_path + "music_index.pkl"
 
     @staticmethod
     def get_music_list() -> List[MusicInfo]:
@@ -156,6 +160,75 @@ class FileIO:
         with open(html_file_path, "w") as f:
             f.write(html_text)
 
+    @staticmethod
+    def save_music_index(music_list: List[MusicInfo]):
+        """音楽ファイルのインデックスを保存"""
+        with open(FileIO.index_file_path, "wb") as f:
+            pickle.dump(music_list, f)
+
+    @staticmethod
+    def load_music_index() -> List[MusicInfo]:
+        """音楽ファイルのインデックスを読み込み"""
+        try:
+            with open(FileIO.index_file_path, "rb") as f:
+                return pickle.load(f)
+        except FileNotFoundError:
+            return []
+
+    @staticmethod
+    def get_music_info_from_file(fullpath: str) -> MusicInfo:
+        """単一の音楽ファイルからMusicInfoを生成"""
+        try:
+            # ファイルの存在とアクセス可能性を確認
+            if not os.path.exists(fullpath) or not os.access(fullpath, os.R_OK):
+                print(f"[warning] {fullpath} is not accessible")
+                return None
+                
+            file = eyed3.load(fullpath)
+            relative_path_escaped = urllib.parse.quote(str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path)))
+            absolute_url = app_root_url + relative_path_escaped
+            file_size_bytes = os.path.getsize(fullpath)
+
+            if file is None or file.tag is None or file.tag.album is None:
+                print(f"[warning] {fullpath} has no valid ID3 tag information")
+                return None
+
+            music_info = MusicInfo()
+            music_info.fullpath = fullpath
+            music_info.album_name = file.tag.album
+            music_info.title = file.tag.title if file.tag.title else os.path.basename(fullpath)
+            music_info.duration_seconds = file.info.time_secs
+            music_info.absolute_url = absolute_url
+            music_info.file_size_bytes = file_size_bytes
+            music_info.created_timestamp = os.path.getctime(fullpath)
+
+            # サムネイル画像を保存する
+            thumbnail_url = ""
+            for image in file.tag.images:
+                extension = ""
+                if image.mime_type in ["image/jpeg", "image/jpg"]:
+                    extension = "jpg"
+                if image.mime_type == "image/png":
+                    extension = "png"
+                if extension != "":
+                    filename = music_info.md5() + "." + extension
+                    thumbnail_path = FileIO.thumbnail_dir_path + filename
+                    thumbnail_url = app_root_url + FileIO.thumbnail_dir_name + "/" + filename
+                    if not os.path.exists(thumbnail_path):
+                        with open(thumbnail_path, "wb") as fo:
+                            fo.write(image.image_data)
+                    break
+            if thumbnail_url != "":
+                music_info.thumbnail_url = thumbnail_url
+            else:
+                music_info.thumbnail_url = FileIO.default_thumbnail_url
+
+            return music_info
+            
+        except Exception as e:
+            print(f"[warning] Error reading file {fullpath}: {e}")
+            return None
+
 
 class TemplateRenderer:
     @staticmethod
@@ -201,10 +274,78 @@ class TemplateRenderer:
 class FeedGenerator:
     @staticmethod
     def generate():
+        """初回起動時の全体生成"""
         music_list = FileIO.get_music_list()
-        music_list_grouped_by_album_name = groupby(sorted(music_list, key=lambda e: e.album_name), key=lambda e: e.album_name)
-        template = FileIO.get_feed_xml_template()
+        FileIO.save_music_index(music_list)
+        FeedGenerator._regenerate_all_feeds(music_list)
 
+    @staticmethod
+    def add_music_file(file_path: str):
+        """新しい音楽ファイルを追加し、フィードを差分更新"""
+        print(f"[info] Adding music file: {file_path}")
+        
+        # 新しいファイルの情報を取得
+        new_music_info = FileIO.get_music_info_from_file(file_path)
+        if new_music_info is None:
+            print(f"[warning] {file_path} was skipped (invalid music file)")
+            return
+
+        # 既存のインデックスを読み込み
+        existing_music_list = FileIO.load_music_index()
+        
+        # 重複チェック
+        for existing in existing_music_list:
+            if existing.fullpath == file_path:
+                print(f"[info] File already exists in index: {file_path}")
+                return
+
+        # インデックスに追加
+        existing_music_list.append(new_music_info)
+        FileIO.save_music_index(existing_music_list)
+
+        # 該当アルバムのフィードのみ更新
+        FeedGenerator._update_album_feed(new_music_info.album_name, existing_music_list)
+        
+        # インデックスページを更新
+        all_feeds = FeedGenerator._get_all_feeds(existing_music_list)
+        TemplateRenderer.render_index_html(all_feeds)
+
+    @staticmethod
+    def remove_music_file(file_path: str):
+        """音楽ファイルを削除し、フィードを差分更新"""
+        print(f"[info] Removing music file: {file_path}")
+        
+        # 既存のインデックスを読み込み
+        existing_music_list = FileIO.load_music_index()
+        
+        # 削除対象を探す
+        removed_music = None
+        updated_music_list = []
+        for music in existing_music_list:
+            if music.fullpath == file_path:
+                removed_music = music
+            else:
+                updated_music_list.append(music)
+
+        if removed_music is None:
+            print(f"[info] File not found in index: {file_path}")
+            return
+
+        # インデックスを更新
+        FileIO.save_music_index(updated_music_list)
+
+        # 該当アルバムのフィードを更新
+        FeedGenerator._update_album_feed(removed_music.album_name, updated_music_list)
+        
+        # インデックスページを更新
+        all_feeds = FeedGenerator._get_all_feeds(updated_music_list)
+        TemplateRenderer.render_index_html(all_feeds)
+
+    @staticmethod
+    def _regenerate_all_feeds(music_list: List[MusicInfo]):
+        """全フィードを再生成"""
+        music_list_grouped_by_album_name = groupby(sorted(music_list, key=lambda e: e.album_name), key=lambda e: e.album_name)
+        
         all_feeds: [FeedInfo] = []
         for key, music_list in music_list_grouped_by_album_name:
             feed = FeedInfo(album_name=key)
@@ -213,6 +354,21 @@ class FeedGenerator:
             TemplateRenderer.render_feed_xml(feed, sorted_music_list)
 
         TemplateRenderer.render_index_html(all_feeds)
+
+    @staticmethod
+    def _update_album_feed(album_name: str, music_list: List[MusicInfo]):
+        """特定のアルバムのフィードのみ更新"""
+        album_music_list = [music for music in music_list if music.album_name == album_name]
+        if album_music_list:
+            feed = FeedInfo(album_name=album_name)
+            sorted_music_list: List[MusicInfo] = sorted(album_music_list, key=lambda e: e.title, reverse=True)
+            TemplateRenderer.render_feed_xml(feed, sorted_music_list)
+
+    @staticmethod
+    def _get_all_feeds(music_list: List[MusicInfo]) -> List[FeedInfo]:
+        """全フィード情報を取得"""
+        album_names = list(set([music.album_name for music in music_list]))
+        return [FeedInfo(album_name=name) for name in album_names]
 
 if __name__ == "__main__":
     FeedGenerator.generate()

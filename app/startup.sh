@@ -7,6 +7,6 @@ if [ ! -e "music_files" ]; then
     ln -s /volumes/music_files music_files
 fi
 
-python3 -B /usr/src/app/feed_generator.py
-python3 -B /usr/src/app/scheduler.py &
+# ファイル監視システムをバックグラウンドで起動
+python3 -B /usr/src/app/file_watcher.py &
 httpd -D FOREGROUND
