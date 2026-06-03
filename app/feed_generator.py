@@ -39,7 +39,7 @@ class MusicInfo:
     thumbnail_url: str = ""
 
     def md5(self) -> str:
-        return hashlib.md5((self.album_name + self.title).encode()).hexdigest()
+        return hashlib.md5(((self.album_name or "") + (self.title or "")).encode()).hexdigest()
 
 @dataclass
 class FeedInfo:
@@ -77,66 +77,22 @@ class FileIO:
     index_file_path = f"{htdocs_dir_path}music_index.pkl"
 
     @staticmethod
-    def get_music_list() -> List[MusicInfo]:
-        # ファイルのフルパスの一覧を生成
+    def list_music_fullpaths() -> List[str]:
+        """監視対象ディレクトリ配下の音楽ファイルのフルパス一覧を返す"""
         music_file_fullpaths: List[str] = []
         for extension in FileIO.music_extensions:
             pattern = os.path.join(FileIO.music_files_dir_path, f"**/*{extension}")
             music_file_fullpaths.extend(glob.glob(pattern, recursive=True))
+        return music_file_fullpaths
 
-        # フルパスの一覧からMusicInfoのリストを生成
+    @staticmethod
+    def get_music_list() -> List[MusicInfo]:
+        """全音楽ファイルから MusicInfo の一覧を生成する(読めない/タグ不備は除外)"""
         music_info_list: List[MusicInfo] = []
-        for fullpath in music_file_fullpaths:
-            # ファイルごとのメタデータを取得して、MusicInfoに情報を追加
-            file = eyed3.load(fullpath)
-            relative_path_escaped = urllib.parse.quote(str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path)))
-            absolute_url = f"{app_root_url}{relative_path_escaped}"
-            file_size_bytes = os.path.getsize(fullpath)
-
-            if file is None:
-                logger.warning(f"{fullpath} was skipped (id3 info is none)")
-                continue
-
-            if file.tag is None:
-                logger.warning(f"{fullpath} was skipped (tag is none)")
-                continue
-
-            if file.tag.album is None:
-                logger.warning(f"{fullpath} was skipped (album_name is none)")
-                continue
-
-            music_info = MusicInfo()
-            music_info.fullpath = fullpath
-            music_info.album_name = file.tag.album
-            music_info.title = file.tag.title
-            music_info.duration_seconds = file.info.time_secs
-            music_info.absolute_url = absolute_url
-            music_info.file_size_bytes = file_size_bytes
-            music_info.created_timestamp = os.path.getctime(fullpath)
-
-            # サムネイル画像を保存する
-            thumbnail_url = ""
-            for image in file.tag.images:
-                extension = ""
-                if image.mime_type in ["image/jpeg", "image/jpg"]:
-                    extension = "jpg"
-                if image.mime_type == "image/png":
-                    extension = "png"
-                if extension != "":
-                    filename = f"{music_info.md5()}.{extension}"
-                    thumbnail_path = f"{FileIO.thumbnail_dir_path}{filename}"
-                    thumbnail_url = f"{app_root_url}{FileIO.thumbnail_dir_name}/{filename}"
-                    if not os.path.exists(thumbnail_path):
-                        with open(thumbnail_path, "wb") as fo:
-                            fo.write(image.image_data)
-                    break
-            if thumbnail_url != "":
-                music_info.thumbnail_url = thumbnail_url
-            else:
-                music_info.thumbnail_url = FileIO.default_thumbnail_url
-
-            music_info_list.append(music_info)
-
+        for fullpath in FileIO.list_music_fullpaths():
+            music_info = FileIO.build_music_info(fullpath)
+            if music_info is not None:
+                music_info_list.append(music_info)
         return music_info_list
 
     @staticmethod
@@ -179,55 +135,57 @@ class FileIO:
             return []
 
     @staticmethod
-    def get_music_info_from_file(fullpath: str) -> Optional[MusicInfo]:
-        """単一の音楽ファイルからMusicInfoを生成"""
+    def _extract_thumbnail_url(music_info: "MusicInfo", tag_images) -> str:
+        """ID3 の埋め込み画像を thumbs/ に保存し、その URL を返す。無ければデフォルト URL。"""
+        for image in tag_images:
+            extension = ""
+            if image.mime_type in ["image/jpeg", "image/jpg"]:
+                extension = "jpg"
+            elif image.mime_type == "image/png":
+                extension = "png"
+            if extension:
+                filename = f"{music_info.md5()}.{extension}"
+                thumbnail_path = f"{FileIO.thumbnail_dir_path}{filename}"
+                if not os.path.exists(thumbnail_path):
+                    with open(thumbnail_path, "wb") as fo:
+                        fo.write(image.image_data)
+                return f"{app_root_url}{FileIO.thumbnail_dir_name}/{filename}"
+        return FileIO.default_thumbnail_url
+
+    @staticmethod
+    def build_music_info(fullpath: str) -> Optional[MusicInfo]:
+        """単一の音楽ファイルから MusicInfo を生成する。読めない/タグ不備なら None を返す。
+
+        get_music_list(全件)と差分更新の両方から使う唯一の生成経路。
+        """
         try:
             # ファイルの存在とアクセス可能性を確認
             if not os.path.exists(fullpath) or not os.access(fullpath, os.R_OK):
-                logger.warning(f"{fullpath} is not accessible")
+                logger.warning(f"{fullpath} was skipped (not accessible)")
                 return None
-                
-            file = eyed3.load(fullpath)
-            relative_path_escaped = urllib.parse.quote(str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path)))
-            absolute_url = f"{app_root_url}{relative_path_escaped}"
-            file_size_bytes = os.path.getsize(fullpath)
 
-            if file is None or file.tag is None or file.tag.album is None:
-                logger.warning(f"{fullpath} has no valid ID3 tag information")
+            file = eyed3.load(fullpath)
+            if file is None or file.tag is None:
+                logger.warning(f"{fullpath} was skipped (no id3 tag)")
                 return None
+            if file.tag.album is None:
+                logger.warning(f"{fullpath} was skipped (album is none)")
+                return None
+
+            relative_path_escaped = urllib.parse.quote(str(pathlib.Path(fullpath).relative_to(FileIO.htdocs_dir_path)))
 
             music_info = MusicInfo()
             music_info.fullpath = fullpath
             music_info.album_name = file.tag.album
+            # title が無いファイルはファイル名で代替(None のままだと md5/ソートで TypeError になる)
             music_info.title = file.tag.title if file.tag.title else os.path.basename(fullpath)
-            music_info.duration_seconds = file.info.time_secs
-            music_info.absolute_url = absolute_url
-            music_info.file_size_bytes = file_size_bytes
+            music_info.duration_seconds = file.info.time_secs if file.info else 0.0
+            music_info.absolute_url = f"{app_root_url}{relative_path_escaped}"
+            music_info.file_size_bytes = os.path.getsize(fullpath)
             music_info.created_timestamp = os.path.getctime(fullpath)
-
-            # サムネイル画像を保存する
-            thumbnail_url = ""
-            for image in file.tag.images:
-                extension = ""
-                if image.mime_type in ["image/jpeg", "image/jpg"]:
-                    extension = "jpg"
-                if image.mime_type == "image/png":
-                    extension = "png"
-                if extension != "":
-                    filename = f"{music_info.md5()}.{extension}"
-                    thumbnail_path = f"{FileIO.thumbnail_dir_path}{filename}"
-                    thumbnail_url = f"{app_root_url}{FileIO.thumbnail_dir_name}/{filename}"
-                    if not os.path.exists(thumbnail_path):
-                        with open(thumbnail_path, "wb") as fo:
-                            fo.write(image.image_data)
-                    break
-            if thumbnail_url != "":
-                music_info.thumbnail_url = thumbnail_url
-            else:
-                music_info.thumbnail_url = FileIO.default_thumbnail_url
-
+            music_info.thumbnail_url = FileIO._extract_thumbnail_url(music_info, file.tag.images)
             return music_info
-            
+
         except Exception as e:
             logger.warning(f"Error reading file {fullpath}: {e}")
             return None
@@ -236,6 +194,10 @@ class FileIO:
 class TemplateRenderer:
     @staticmethod
     def render_feed_xml(feed_info: FeedInfo, music_info_list: List[MusicInfo]):
+        # 空のフィードは描画しない(channel.thumbnail_url の IndexError 防止も兼ねる)
+        if not music_info_list:
+            return
+
         items: List[Dict[str, Any]] = []
 
         for music_info in music_info_list:
@@ -288,7 +250,7 @@ class FeedGenerator:
         logger.info(f"Adding music file: {file_path}")
         
         # 新しいファイルの情報を取得
-        new_music_info = FileIO.get_music_info_from_file(file_path)
+        new_music_info = FileIO.build_music_info(file_path)
         if new_music_info is None:
             logger.warning(f"{file_path} was skipped (invalid music file)")
             return
@@ -360,12 +322,16 @@ class FeedGenerator:
 
     @staticmethod
     def _update_album_feed(album_name: str, music_list: List[MusicInfo]):
-        """特定のアルバムのフィードのみ更新"""
+        """特定のアルバムのフィードのみ更新。曲が無くなったら孤立フィードXMLを削除する。"""
         album_music_list = [music for music in music_list if music.album_name == album_name]
+        feed = FeedInfo(album_name=album_name)
         if album_music_list:
-            feed = FeedInfo(album_name=album_name)
             sorted_music_list: List[MusicInfo] = sorted(album_music_list, key=lambda e: e.title, reverse=True)
             TemplateRenderer.render_feed_xml(feed, sorted_music_list)
+        else:
+            # アルバム最後の曲が削除された → 残存するフィードXMLを削除(無ければ無視)
+            pathlib.Path(feed.file_path()).unlink(missing_ok=True)
+            logger.info(f"Removed orphaned feed for empty album: {album_name}")
 
     @staticmethod
     def _get_all_feeds(music_list: List[MusicInfo]) -> List[FeedInfo]:
