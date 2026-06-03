@@ -6,24 +6,29 @@ LABEL maintainer="zrn-ns"
 ARG APP_ROOT_URL="http://localhost:80/"
 ENV APP_ROOT_URL=$APP_ROOT_URL
 
-# Install python and pip
+# Python と venv をインストール(vim 等の不要パッケージは入れない)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         python3 \
-        python3-pip \
-        vim \
-        python3-setuptools && \
-    pip3 install --upgrade pip --break-system-packages && \
+        python3-venv && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# copy applications
+# venv を作成し、以降の python/pip を venv のものに固定する
+# (システム Python を直接汚さないため --break-system-packages を排除)
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv "$VIRTUAL_ENV"
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# 依存だけを先に COPY/install することで、アプリのソース変更時に
+# pip install レイヤのキャッシュを再利用できるようにする
+COPY app/requirements.txt /usr/src/app/requirements.txt
+RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt
+
+# アプリ本体をコピー
 COPY app/ /usr/src/app/
 
-# install Python modules needed by the Python app
-RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt --break-system-packages
-
-# copy files required for the app to run
+# 配信に必要なファイルをコピー
 COPY htdocs /usr/local/apache2/htdocs
 
 # tell the port number the container should expose

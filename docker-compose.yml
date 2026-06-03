@@ -1,7 +1,6 @@
-version: '3'
 services:
   podcast-server:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     ports:
