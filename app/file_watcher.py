@@ -25,6 +25,9 @@ CHANGED = "changed"   # 追加 or 変更
 DELETED = "deleted"   # 削除
 _SHUTDOWN = object()   # ワーカー停止用センチネル
 
+# 死活監視用ハートビートファイル(HEALTHCHECK が鮮度を見る)
+HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE", "/tmp/podcast_watcher_heartbeat")
+
 
 def is_music_file(path: str) -> bool:
     """音楽ファイル(拡張子一致)かどうか判定する"""
@@ -79,12 +82,15 @@ class FileWatcher:
 
     def __init__(self, watch_directory: str, polling_interval: int = 30,
                  debounce_seconds: float = 2.0, max_batch_seconds: float = 30.0,
-                 max_defer_attempts: int = 30):
+                 max_defer_attempts: int = 30, heartbeat_interval: float = 10.0,
+                 heartbeat_file: str = HEARTBEAT_FILE):
         self.watch_directory = watch_directory
         self.polling_interval = polling_interval
         self.debounce_seconds = debounce_seconds
         self.max_batch_seconds = max_batch_seconds
         self.max_defer_attempts = max_defer_attempts
+        self.heartbeat_interval = heartbeat_interval
+        self.heartbeat_file = heartbeat_file
 
         self._queue: "queue.Queue" = queue.Queue()
         self._observer = Observer()
@@ -117,6 +123,22 @@ class FileWatcher:
         for gone_path in self._known_files - current:
             logger.info(f"Polling detected deleted file: {gone_path}")
             self._enqueue(gone_path, DELETED)
+
+        # 既存ファイルの内容変更(再タグ付け)を mtime の進みで検知する。
+        # watchdog のイベントが届かない環境(macOS の Docker ボリューム等)でも
+        # タグ修正を反映できるようにするための経路。
+        indexed_mtimes = FeedGenerator.indexed_mtimes()
+        for path in current & self._known_files:
+            stored = indexed_mtimes.get(path)
+            if stored is None:
+                continue
+            try:
+                disk_mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if disk_mtime > stored + 1.0:  # 1秒の余裕で誤差を吸収
+                logger.info(f"Polling detected modified file: {path}")
+                self._enqueue(path, CHANGED)
 
         self._known_files = current
 
@@ -227,6 +249,14 @@ class FileWatcher:
                         self._enqueue(path, kind)
             threading.Thread(target=requeue, name="feed-requeue", daemon=True).start()
 
+    def _write_heartbeat(self):
+        """死活監視用に現在時刻をハートビートファイルへ書く"""
+        try:
+            with open(self.heartbeat_file, "w") as f:
+                f.write(str(time.time()))
+        except OSError as e:
+            logger.warning(f"failed to write heartbeat: {e}")
+
     # --- ライフサイクル ---
     def start(self):
         logger.info(f"Starting file watcher for directory: {self.watch_directory}")
@@ -239,12 +269,27 @@ class FileWatcher:
         self._observer.schedule(self._handler, self.watch_directory, recursive=True)
         self._observer.start()
         self._poller.start()
+        self._write_heartbeat()
         logger.info("File watcher started")
 
         try:
             while not self._stop.is_set():
-                time.sleep(1)
+                # サブスレッドの死活監視: どれか落ちたら監視を畳んでプロセスを終了させ、
+                # コンテナを再起動させる(片肺運転=サイレント障害を防ぐ)
+                if not self._worker.is_alive():
+                    logger.error("worker thread died; shutting down to trigger restart")
+                    break
+                if not self._poller.is_alive():
+                    logger.error("poller thread died; shutting down to trigger restart")
+                    break
+                if not self._observer.is_alive():
+                    logger.error("observer thread died; shutting down to trigger restart")
+                    break
+                self._write_heartbeat()
+                time.sleep(self.heartbeat_interval)
         except KeyboardInterrupt:
+            pass
+        finally:
             self.stop()
 
     def stop(self):

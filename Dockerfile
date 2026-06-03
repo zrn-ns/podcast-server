@@ -34,4 +34,8 @@ COPY htdocs /usr/local/apache2/htdocs
 # tell the port number the container should expose
 EXPOSE 80
 
+# file_watcher のハートビートが新しいことを確認する(監視デーモンの片肺運転を検知)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python3 -c "import os, time, sys; hb = os.environ.get('HEARTBEAT_FILE', '/tmp/podcast_watcher_heartbeat'); sys.exit(0 if os.path.exists(hb) and (time.time() - os.path.getmtime(hb)) < 90 else 1)"
+
 CMD ["/usr/src/app/startup.sh"]

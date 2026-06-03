@@ -9,4 +9,8 @@ services:
       - ~/podcast_music_files/:/volumes/music_files/
     environment:
       - APP_ROOT_URL=http://localhost:8080/
+    # 監視デーモンや httpd が落ちた場合に自動再起動する
+    restart: unless-stopped
+    # PID1 に init(tini)を挟み、ゾンビ回収とシグナル転送を確実にする
+    init: true
     tty: true
