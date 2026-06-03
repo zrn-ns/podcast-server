@@ -1,0 +1,10 @@
+# Docker ビルドコンテキストから除外する(イメージ肥大化・キャッシュ無効化の防止)
+.git
+.github
+.claude
+**/__pycache__/
+*.py[cod]
+**/.DS_Store
+README.md
+CLAUDE.md
+docker-compose.yml

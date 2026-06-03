@@ -1,1 +1,8 @@
 .DS_Store
+
+# Python が自動生成するバイトコード
+__pycache__/
+*.py[cod]
+
+# Claude Code のローカル成果物
+.claude/
