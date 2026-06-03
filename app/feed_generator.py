@@ -14,6 +14,7 @@ import hashlib
 import time
 import urllib.parse
 import pickle
+import tempfile
 
 # ロガー設定
 logging.basicConfig(
@@ -120,19 +121,43 @@ class FileIO:
             f.write(html_text)
 
     @staticmethod
-    def save_music_index(music_list: List[MusicInfo]):
-        """音楽ファイルのインデックスを保存"""
-        with open(FileIO.index_file_path, "wb") as f:
-            pickle.dump(music_list, f)
+    def save_music_index(by_path: Dict[str, MusicInfo]):
+        """インデックス(fullpath -> MusicInfo)を原子的に保存する。
+
+        tempfile に書いてから os.replace で差し替えることで、書き込み途中の
+        クラッシュによる pickle 破損を防ぐ。
+        """
+        dir_path = os.path.dirname(FileIO.index_file_path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                pickle.dump(by_path, f)
+            os.replace(tmp_path, FileIO.index_file_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     @staticmethod
-    def load_music_index() -> List[MusicInfo]:
-        """音楽ファイルのインデックスを読み込み"""
+    def load_music_index() -> Dict[str, MusicInfo]:
+        """インデックスを読み込む。旧形式(list)や破損時は安全にフォールバックする。"""
         try:
             with open(FileIO.index_file_path, "rb") as f:
-                return pickle.load(f)
+                data = pickle.load(f)
         except FileNotFoundError:
-            return []
+            return {}
+        except Exception as e:
+            logger.warning(f"music_index.pkl の読み込みに失敗、空で再構築します: {e}")
+            return {}
+
+        # 旧形式(List[MusicInfo])との後方互換: dict へ変換する
+        if isinstance(data, list):
+            logger.info("旧形式(list)のインデックスを dict へ変換します")
+            return {mi.fullpath: mi for mi in data}
+        if isinstance(data, dict):
+            return data
+        logger.warning("未知の形式のインデックス、空で再構築します")
+        return {}
 
     @staticmethod
     def _extract_thumbnail_url(music_info: "MusicInfo", tag_images) -> str:
@@ -191,6 +216,76 @@ class FileIO:
             return None
 
 
+class MusicIndex:
+    """音楽ファイルのメタデータをメモリ常駐で保持するインデックス。
+
+    内部表現は fullpath -> MusicInfo の dict。重複チェック・削除を O(1) で行える。
+    アルバム名 -> fullpath集合 の補助インデックスも持ち、アルバム単位の取得を高速化する。
+    """
+
+    def __init__(self, by_path: Optional[Dict[str, MusicInfo]] = None):
+        self._by_path: Dict[str, MusicInfo] = {}
+        self._album_paths: Dict[str, set] = {}
+        if by_path:
+            for music_info in by_path.values():
+                self.upsert(music_info)
+
+    # --- 変更系 ---
+    def upsert(self, music_info: MusicInfo) -> Optional[str]:
+        """追加または更新する。アルバムが変わった場合は旧アルバム名を返す(フィード更新用)。"""
+        old = self._by_path.get(music_info.fullpath)
+        old_album = None
+        if old is not None and old.album_name != music_info.album_name:
+            old_album = old.album_name
+            old_paths = self._album_paths.get(old_album)
+            if old_paths is not None:
+                old_paths.discard(old.fullpath)
+                if not old_paths:
+                    del self._album_paths[old_album]
+        self._by_path[music_info.fullpath] = music_info
+        self._album_paths.setdefault(music_info.album_name, set()).add(music_info.fullpath)
+        return old_album
+
+    def remove(self, fullpath: str) -> Optional[MusicInfo]:
+        """削除する。削除した MusicInfo を返す(存在しなければ None)。"""
+        music_info = self._by_path.pop(fullpath, None)
+        if music_info is not None:
+            paths = self._album_paths.get(music_info.album_name)
+            if paths is not None:
+                paths.discard(fullpath)
+                if not paths:
+                    del self._album_paths[music_info.album_name]
+        return music_info
+
+    # --- 参照系 ---
+    def contains(self, fullpath: str) -> bool:
+        return fullpath in self._by_path
+
+    def get(self, fullpath: str) -> Optional[MusicInfo]:
+        return self._by_path.get(fullpath)
+
+    def album_musics(self, album_name: str) -> List[MusicInfo]:
+        paths = self._album_paths.get(album_name, set())
+        return [self._by_path[p] for p in paths if p in self._by_path]
+
+    def album_names(self) -> List[str]:
+        return sorted(self._album_paths.keys())
+
+    def all_paths(self) -> set:
+        return set(self._by_path.keys())
+
+    def __len__(self) -> int:
+        return len(self._by_path)
+
+    # --- 永続化 ---
+    def save(self):
+        FileIO.save_music_index(self._by_path)
+
+    @classmethod
+    def load(cls) -> "MusicIndex":
+        return cls(by_path=FileIO.load_music_index())
+
+
 class TemplateRenderer:
     @staticmethod
     def render_feed_xml(feed_info: FeedInfo, music_info_list: List[MusicInfo]):
@@ -237,107 +332,92 @@ class TemplateRenderer:
         FileIO.output_index_html(html)
 
 class FeedGenerator:
-    @staticmethod
-    def generate():
-        """初回起動時の全体生成"""
-        music_list = FileIO.get_music_list()
-        FileIO.save_music_index(music_list)
-        FeedGenerator._regenerate_all_feeds(music_list)
+    # メモリ常駐のインデックス(長時間稼働する file_watcher プロセスが保持する)
+    _index: Optional[MusicIndex] = None
 
-    @staticmethod
-    def add_music_file(file_path: str):
-        """新しい音楽ファイルを追加し、フィードを差分更新"""
+    @classmethod
+    def _get_index(cls) -> MusicIndex:
+        """メモリ上のインデックスを返す。未ロードなら一度だけディスクから復元する。"""
+        if cls._index is None:
+            cls._index = MusicIndex.load()
+        return cls._index
+
+    @classmethod
+    def generate(cls):
+        """初回起動時の全体生成。インデックスをメモリ上に構築して保存する。"""
+        index = MusicIndex()
+        for music_info in FileIO.get_music_list():
+            index.upsert(music_info)
+        cls._index = index
+        index.save()
+        cls._regenerate_all_feeds(index)
+
+    @classmethod
+    def add_music_file(cls, file_path: str):
+        """新しい音楽ファイルを追加し、フィードを差分更新する"""
         logger.info(f"Adding music file: {file_path}")
-        
-        # 新しいファイルの情報を取得
+        index = cls._get_index()
+
+        # 重複チェック(O(1))
+        if index.contains(file_path):
+            logger.info(f"File already exists in index: {file_path}")
+            return
+
         new_music_info = FileIO.build_music_info(file_path)
         if new_music_info is None:
             logger.warning(f"{file_path} was skipped (invalid music file)")
             return
 
-        # 既存のインデックスを読み込み
-        existing_music_list = FileIO.load_music_index()
-        
-        # 重複チェック
-        for existing in existing_music_list:
-            if existing.fullpath == file_path:
-                logger.info(f"File already exists in index: {file_path}")
-                return
+        index.upsert(new_music_info)
+        index.save()
+        cls._update_album_feed(new_music_info.album_name, index)
+        cls._render_index(index)
 
-        # インデックスに追加
-        existing_music_list.append(new_music_info)
-        FileIO.save_music_index(existing_music_list)
-
-        # 該当アルバムのフィードのみ更新
-        FeedGenerator._update_album_feed(new_music_info.album_name, existing_music_list)
-        
-        # インデックスページを更新
-        all_feeds = FeedGenerator._get_all_feeds(existing_music_list)
-        TemplateRenderer.render_index_html(all_feeds)
-
-    @staticmethod
-    def remove_music_file(file_path: str):
-        """音楽ファイルを削除し、フィードを差分更新"""
+    @classmethod
+    def remove_music_file(cls, file_path: str):
+        """音楽ファイルを削除し、フィードを差分更新する"""
         logger.info(f"Removing music file: {file_path}")
-        
-        # 既存のインデックスを読み込み
-        existing_music_list = FileIO.load_music_index()
-        
-        # 削除対象を探す
-        removed_music = None
-        updated_music_list = []
-        for music in existing_music_list:
-            if music.fullpath == file_path:
-                removed_music = music
-            else:
-                updated_music_list.append(music)
+        index = cls._get_index()
 
+        removed_music = index.remove(file_path)
         if removed_music is None:
             logger.info(f"File not found in index: {file_path}")
             return
 
-        # インデックスを更新
-        FileIO.save_music_index(updated_music_list)
+        index.save()
+        cls._update_album_feed(removed_music.album_name, index)
+        cls._render_index(index)
 
-        # 該当アルバムのフィードを更新
-        FeedGenerator._update_album_feed(removed_music.album_name, updated_music_list)
-        
-        # インデックスページを更新
-        all_feeds = FeedGenerator._get_all_feeds(updated_music_list)
-        TemplateRenderer.render_index_html(all_feeds)
-
-    @staticmethod
-    def _regenerate_all_feeds(music_list: List[MusicInfo]):
-        """全フィードを再生成"""
-        grouped = groupby(sorted(music_list, key=lambda e: e.album_name), key=lambda e: e.album_name)
-
+    @classmethod
+    def _regenerate_all_feeds(cls, index: MusicIndex):
+        """全フィードと index.html を再生成する"""
         all_feeds: List[FeedInfo] = []
-        for album_name, group_musics in grouped:
+        for album_name in index.album_names():
             feed = FeedInfo(album_name=album_name)
             all_feeds.append(feed)
-            sorted_music_list: List[MusicInfo] = sorted(list(group_musics), key=lambda e: e.title, reverse=True)
+            sorted_music_list = sorted(index.album_musics(album_name), key=lambda e: e.title, reverse=True)
             TemplateRenderer.render_feed_xml(feed, sorted_music_list)
-
         TemplateRenderer.render_index_html(all_feeds)
 
-    @staticmethod
-    def _update_album_feed(album_name: str, music_list: List[MusicInfo]):
+    @classmethod
+    def _update_album_feed(cls, album_name: str, index: MusicIndex):
         """特定のアルバムのフィードのみ更新。曲が無くなったら孤立フィードXMLを削除する。"""
-        album_music_list = [music for music in music_list if music.album_name == album_name]
+        album_music_list = index.album_musics(album_name)
         feed = FeedInfo(album_name=album_name)
         if album_music_list:
-            sorted_music_list: List[MusicInfo] = sorted(album_music_list, key=lambda e: e.title, reverse=True)
+            sorted_music_list = sorted(album_music_list, key=lambda e: e.title, reverse=True)
             TemplateRenderer.render_feed_xml(feed, sorted_music_list)
         else:
             # アルバム最後の曲が削除された → 残存するフィードXMLを削除(無ければ無視)
             pathlib.Path(feed.file_path()).unlink(missing_ok=True)
             logger.info(f"Removed orphaned feed for empty album: {album_name}")
 
-    @staticmethod
-    def _get_all_feeds(music_list: List[MusicInfo]) -> List[FeedInfo]:
-        """全フィード情報を取得"""
-        album_names = sorted(set(music.album_name for music in music_list))
-        return [FeedInfo(album_name=name) for name in album_names]
+    @classmethod
+    def _render_index(cls, index: MusicIndex):
+        """index.html を現在のアルバム一覧から再生成する"""
+        all_feeds = [FeedInfo(album_name=name) for name in index.album_names()]
+        TemplateRenderer.render_index_html(all_feeds)
+
 
 if __name__ == "__main__":
     FeedGenerator.generate()
