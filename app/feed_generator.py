@@ -9,13 +9,10 @@ import glob
 from dataclasses import dataclass
 from itertools import groupby
 from jinja2 import Template, Environment, FileSystemLoader
-import json
-from typing import Any
-from email.utils import formatdate
+from typing import Any, Dict, List, Optional
 import hashlib
 import time
-from typing import List, Dict, Optional
-import urllib
+import urllib.parse
 import pickle
 
 # ロガー設定
@@ -28,14 +25,14 @@ logger = logging.getLogger(__name__)
 # アプリのルートURL(例: http://hogehoge.local:80/)
 app_root_url: str = os.environ["APP_ROOT_URL"]
 
-timezone = timezone(timedelta(hours=9))
+JST = timezone(timedelta(hours=9))
 
 @dataclass
 class MusicInfo:
     fullpath: str = ""
     album_name: str = ""
     title: str = ""
-    duration_seconds: int = ""
+    duration_seconds: float = 0.0
     absolute_url: str = ""
     file_size_bytes: int = 0
     created_timestamp: int = 0
@@ -63,7 +60,7 @@ class FileIO:
     feeds_dir_name = "feeds"
     htdocs_dir_path = "/usr/local/apache2/htdocs/"
     music_files_dir_path = f"{htdocs_dir_path}music_files/"
-    music_extensions: List[str] = ["mp3", "m4a"]
+    music_extensions: List[str] = [".mp3", ".m4a"]
     index_html_file_path = f"{htdocs_dir_path}index.html"
     output_xml_dir_path = f"{htdocs_dir_path}{feeds_dir_name}/"
     feeds_dir_url = f"{app_root_url}{feeds_dir_name}/"
@@ -84,7 +81,8 @@ class FileIO:
         # ファイルのフルパスの一覧を生成
         music_file_fullpaths: List[str] = []
         for extension in FileIO.music_extensions:
-            music_file_fullpaths.extend(glob.glob(f"{FileIO.music_files_dir_path}/**/*{extension}", recursive=True))
+            pattern = os.path.join(FileIO.music_files_dir_path, f"**/*{extension}")
+            music_file_fullpaths.extend(glob.glob(pattern, recursive=True))
 
         # フルパスの一覧からMusicInfoのリストを生成
         music_info_list: List[MusicInfo] = []
@@ -238,7 +236,7 @@ class FileIO:
 class TemplateRenderer:
     @staticmethod
     def render_feed_xml(feed_info: FeedInfo, music_info_list: List[MusicInfo]):
-        items: List[Dict[str: Any]] = []
+        items: List[Dict[str, Any]] = []
 
         for music_info in music_info_list:
             items.append({
@@ -264,14 +262,14 @@ class TemplateRenderer:
 
     @staticmethod
     def render_index_html(feed_info_list: List[FeedInfo]):
-        feeds: List[Dict[str: Any]] = []
+        feeds: List[Dict[str, Any]] = []
         for feed_info in feed_info_list:
             feeds.append({
               "path": feed_info.url(),
               "title": feed_info.album_name
             })
 
-        rendering_params = { "last_update_date": datetime.now(timezone), "feeds": feeds }
+        rendering_params = { "last_update_date": datetime.now(JST), "feeds": feeds }
 
         html = FileIO.get_index_html_template().render(rendering_params)
         FileIO.output_index_html(html)
@@ -349,13 +347,13 @@ class FeedGenerator:
     @staticmethod
     def _regenerate_all_feeds(music_list: List[MusicInfo]):
         """全フィードを再生成"""
-        music_list_grouped_by_album_name = groupby(sorted(music_list, key=lambda e: e.album_name), key=lambda e: e.album_name)
-        
+        grouped = groupby(sorted(music_list, key=lambda e: e.album_name), key=lambda e: e.album_name)
+
         all_feeds: List[FeedInfo] = []
-        for key, music_list in music_list_grouped_by_album_name:
-            feed = FeedInfo(album_name=key)
+        for album_name, group_musics in grouped:
+            feed = FeedInfo(album_name=album_name)
             all_feeds.append(feed)
-            sorted_music_list: List[MusicInfo] = sorted(list(music_list), key=lambda e: e.title, reverse=True)
+            sorted_music_list: List[MusicInfo] = sorted(list(group_musics), key=lambda e: e.title, reverse=True)
             TemplateRenderer.render_feed_xml(feed, sorted_music_list)
 
         TemplateRenderer.render_index_html(all_feeds)
@@ -372,7 +370,7 @@ class FeedGenerator:
     @staticmethod
     def _get_all_feeds(music_list: List[MusicInfo]) -> List[FeedInfo]:
         """全フィード情報を取得"""
-        album_names = list(set([music.album_name for music in music_list]))
+        album_names = sorted(set(music.album_name for music in music_list))
         return [FeedInfo(album_name=name) for name in album_names]
 
 if __name__ == "__main__":

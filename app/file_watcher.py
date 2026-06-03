@@ -8,7 +8,6 @@ from watchdog.events import FileSystemEventHandler
 from feed_generator import FeedGenerator, FileIO
 import threading
 from typing import Dict
-import stat
 
 # ロガー設定
 logging.basicConfig(
@@ -22,7 +21,8 @@ class MusicFileHandler(FileSystemEventHandler):
     
     def __init__(self):
         super().__init__()
-        self.music_extensions = ['.mp3', '.m4a']
+        # 拡張子の定義は FileIO に一元化する
+        self.music_extensions = FileIO.music_extensions
         # 処理の重複を避けるためのロック
         self.lock = threading.Lock()
         # ファイルサイズ監視用の辞書
@@ -153,7 +153,7 @@ class FileWatcher:
         """ポーリングによる新しいファイルの検索"""
         try:
             current_files = set()
-            for extension in ['.mp3', '.m4a']:
+            for extension in FileIO.music_extensions:
                 import glob
                 files = glob.glob(os.path.join(self.watch_directory, f"**/*{extension}"), recursive=True)
                 current_files.update(files)
