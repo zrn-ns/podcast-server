@@ -2,12 +2,16 @@
 
 import os
 import time
+import glob
+import queue
 import logging
+import threading
+from typing import Dict, Tuple
+
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
 from feed_generator import FeedGenerator, FileIO
-import threading
-from typing import Dict
 
 # ロガー設定
 logging.basicConfig(
@@ -16,205 +20,255 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class MusicFileHandler(FileSystemEventHandler):
-    """音楽ファイルの変更を監視するハンドラー"""
-    
-    def __init__(self):
+# キューに積むイベントの種別
+CHANGED = "changed"   # 追加 or 変更
+DELETED = "deleted"   # 削除
+_SHUTDOWN = object()   # ワーカー停止用センチネル
+
+
+def is_music_file(path: str) -> bool:
+    """音楽ファイル(拡張子一致)かどうか判定する"""
+    return any(path.lower().endswith(ext) for ext in FileIO.music_extensions)
+
+
+class _EnqueueHandler(FileSystemEventHandler):
+    """watchdog のイベントをキューに積むだけの軽量ハンドラ。
+
+    重い処理(タグ読み取り・フィード生成)は単一のワーカースレッドに集約するため、
+    ここではイベント種別とパスをキューに渡すだけにする。
+    """
+
+    def __init__(self, enqueue):
         super().__init__()
-        # 拡張子の定義は FileIO に一元化する
-        self.music_extensions = FileIO.music_extensions
-        # 処理の重複を避けるためのロック
-        self.lock = threading.Lock()
-        # ファイルサイズ監視用の辞書
-        self.file_sizes: Dict[str, int] = {}
-        # 処理済みファイルの記録
-        self.processed_files: set = set()
-        
-    def is_music_file(self, file_path: str) -> bool:
-        """音楽ファイルかどうか判定"""
-        return any(file_path.lower().endswith(ext) for ext in self.music_extensions)
-    
-    def is_file_write_complete(self, file_path: str, max_attempts: int = 5, wait_time: float = 1.0) -> bool:
-        """ファイルの書き込みが完了しているかチェック"""
-        if not os.path.exists(file_path):
-            return False
-            
-        for attempt in range(max_attempts):
-            try:
-                # ファイルサイズをチェック
-                current_size = os.path.getsize(file_path)
-                
-                # 初回または前回と同じサイズの場合
-                if file_path not in self.file_sizes:
-                    self.file_sizes[file_path] = current_size
-                    time.sleep(wait_time)
-                    continue
-                    
-                # サイズが変わっていない場合
-                if self.file_sizes[file_path] == current_size:
-                    # ファイルが開けるかテスト
-                    try:
-                        with open(file_path, 'rb') as f:
-                            # ファイルの先頭と末尾を読み取ってアクセス可能か確認
-                            f.read(1024)
-                            if current_size > 1024:
-                                f.seek(-1024, 2)
-                                f.read(1024)
-                        
-                        # ファイルのロック状態をチェック（Unix系）
-                        if hasattr(os, 'access') and not os.access(file_path, os.W_OK):
-                            time.sleep(wait_time)
-                            continue
-                            
-                        return True
-                    except (IOError, OSError):
-                        # ファイルがまだロックされている
-                        time.sleep(wait_time)
-                        continue
-                else:
-                    # サイズが変わった場合は更新
-                    self.file_sizes[file_path] = current_size
-                    time.sleep(wait_time)
-                    
-            except (IOError, OSError):
-                time.sleep(wait_time)
-                continue
-                
-        return False
-    
-    def cleanup_file_tracking(self, file_path: str):
-        """ファイル追跡情報をクリーンアップ"""
-        if file_path in self.file_sizes:
-            del self.file_sizes[file_path]
-    
+        self._enqueue = enqueue
+
     def on_created(self, event):
-        """ファイルが作成された時の処理"""
-        if not event.is_directory and self.is_music_file(event.src_path):
-            # バックグラウンドで処理するためのスレッドを起動
-            thread = threading.Thread(target=self._handle_file_created, args=(event.src_path,))
-            thread.daemon = True
-            thread.start()
-    
+        if not event.is_directory and is_music_file(event.src_path):
+            self._enqueue(event.src_path, CHANGED)
+
     def on_modified(self, event):
-        """ファイルが変更された時の処理（書き込み完了を検知するため）"""
-        if not event.is_directory and self.is_music_file(event.src_path):
-            # 作成イベントと重複しないように処理済みファイルかチェック
-            if event.src_path not in self.processed_files:
-                thread = threading.Thread(target=self._handle_file_created, args=(event.src_path,))
-                thread.daemon = True
-                thread.start()
-    
+        if not event.is_directory and is_music_file(event.src_path):
+            self._enqueue(event.src_path, CHANGED)
+
+    def on_moved(self, event):
+        # リネーム/移動は「旧パス削除 + 新パス追加」として扱う
+        if event.is_directory:
+            return
+        if is_music_file(event.src_path):
+            self._enqueue(event.src_path, DELETED)
+        dest_path = getattr(event, "dest_path", "")
+        if dest_path and is_music_file(dest_path):
+            self._enqueue(dest_path, CHANGED)
+
     def on_deleted(self, event):
-        """ファイルが削除された時の処理"""
-        if not event.is_directory and self.is_music_file(event.src_path):
-            with self.lock:
-                logger.info(f"File deleted: {event.src_path}")
-                # 追跡情報をクリーンアップ
-                self.cleanup_file_tracking(event.src_path)
-                self.processed_files.discard(event.src_path)
-                FeedGenerator.remove_music_file(event.src_path)
-    
-    def _handle_file_created(self, file_path: str):
-        """ファイル作成処理を別スレッドで実行"""
-        try:
-            logger.info(f"Detected file: {file_path}, waiting for write completion...")
-            
-            # ファイルの書き込み完了を待つ
-            if self.is_file_write_complete(file_path):
-                with self.lock:
-                    # 重複処理を避ける
-                    if file_path in self.processed_files:
-                        return
-                    
-                    self.processed_files.add(file_path)
-                    logger.info(f"File write completed: {file_path}")
-                    FeedGenerator.add_music_file(file_path)
-                    # 追跡情報をクリーンアップ
-                    self.cleanup_file_tracking(file_path)
-            else:
-                logger.warning(f"File write completion timeout: {file_path}")
-                self.cleanup_file_tracking(file_path)
-                
-        except Exception as e:
-            logger.error(f"Error handling file {file_path}: {e}")
-            self.cleanup_file_tracking(file_path)
+        if not event.is_directory and is_music_file(event.src_path):
+            self._enqueue(event.src_path, DELETED)
+
 
 class FileWatcher:
-    """ファイル監視システム（イベントベース + ポーリング）"""
-    
-    def __init__(self, watch_directory: str, polling_interval: int = 30):
+    """ファイル監視システム(イベント監視 + ポーリングを単一ワーカーに集約)。
+
+    - watchdog によるイベント監視: 変更を即時に検知する。
+    - 定期ポーリング: watchdog のイベントが届かない環境(macOS の Docker ボリューム等)
+      での取りこぼしを補完する。
+    両経路とも「パスとイベント種別をキューに積むだけ」とし、単一のワーカースレッドが
+    消費する。イベントは debounce_seconds 静止するまで貯めてから1回のバッチで反映する
+    ため、大量ファイル投入時も「インデックス保存1回・index.html再生成1回」で済む。
+    単一ワーカーなのでインデックスへの排他ロックは不要。
+    """
+
+    def __init__(self, watch_directory: str, polling_interval: int = 30,
+                 debounce_seconds: float = 2.0, max_batch_seconds: float = 30.0,
+                 max_defer_attempts: int = 30):
         self.watch_directory = watch_directory
-        self.observer = Observer()
-        self.handler = MusicFileHandler()
         self.polling_interval = polling_interval
-        self.known_files = set()
-        
-    def scan_for_new_files(self):
-        """ポーリングによる新しいファイルの検索"""
+        self.debounce_seconds = debounce_seconds
+        self.max_batch_seconds = max_batch_seconds
+        self.max_defer_attempts = max_defer_attempts
+
+        self._queue: "queue.Queue" = queue.Queue()
+        self._observer = Observer()
+        self._handler = _EnqueueHandler(self._enqueue)
+        self._stop = threading.Event()
+
+        # ポーラスレッドのみが触る状態
+        self._known_files = set()
+        # ワーカースレッドのみが触る状態(ロック不要)
+        self._size_cache: Dict[str, Tuple[int, float]] = {}
+        self._defer_attempts: Dict[str, int] = {}
+
+        self._worker = threading.Thread(target=self._run_worker, name="feed-worker", daemon=True)
+        self._poller = threading.Thread(target=self._run_poller, name="feed-poller", daemon=True)
+
+    # --- キュー投入 ---
+    def _enqueue(self, path: str, kind: str):
+        self._queue.put((path, kind))
+
+    # --- ポーリング(取りこぼし補完) ---
+    def _scan_once(self):
+        current = set()
+        for extension in FileIO.music_extensions:
+            pattern = os.path.join(self.watch_directory, f"**/*{extension}")
+            current.update(glob.glob(pattern, recursive=True))
+
+        for new_path in current - self._known_files:
+            logger.info(f"Polling detected new file: {new_path}")
+            self._enqueue(new_path, CHANGED)
+        for gone_path in self._known_files - current:
+            logger.info(f"Polling detected deleted file: {gone_path}")
+            self._enqueue(gone_path, DELETED)
+
+        self._known_files = current
+
+    def _run_poller(self):
+        # polling_interval ごとにスキャン(stop がセットされたら即終了)
+        while not self._stop.wait(self.polling_interval):
+            try:
+                self._scan_once()
+            except Exception as e:
+                logger.error(f"Error in polling: {e}")
+
+    # --- ワーカー(単一消費者) ---
+    def _run_worker(self):
+        pending: Dict[str, str] = {}
+        deadline = None
+        while True:
+            if pending:
+                timeout = max(0.0, min(self.debounce_seconds, deadline - time.monotonic()))
+            else:
+                timeout = None  # イベントが来るまでブロック
+            try:
+                item = self._queue.get(timeout=timeout)
+            except queue.Empty:
+                # debounce 静止 or 最大バッチ時間に到達 → まとめて反映
+                if pending:
+                    self._flush(pending)
+                    pending = {}
+                    deadline = None
+                continue
+
+            if item is _SHUTDOWN:
+                if pending:
+                    self._flush(pending)
+                break
+
+            path, kind = item
+            pending[path] = kind  # 同一パスは最新のイベント種別が勝つ
+            if deadline is None:
+                deadline = time.monotonic() + self.max_batch_seconds
+            elif time.monotonic() >= deadline:
+                # イベントが途切れず流れ続けても最大バッチ時間で必ず吐き出す
+                self._flush(pending)
+                pending = {}
+                deadline = None
+
+    def _is_write_complete(self, path: str) -> bool:
+        """ファイルの書き込みが完了していそうかを判定する。
+
+        サイズと mtime が前回観測から変化していなければ完了とみなす。初回観測でも、
+        最終更新から debounce_seconds 以上経過していれば完了とみなす(無駄な遅延回避)。
+        """
         try:
-            current_files = set()
-            for extension in FileIO.music_extensions:
-                import glob
-                files = glob.glob(os.path.join(self.watch_directory, f"**/*{extension}"), recursive=True)
-                current_files.update(files)
-            
-            # 新しいファイルをチェック
-            new_files = current_files - self.known_files
-            for new_file in new_files:
-                logger.info(f"Polling detected new file: {new_file}")
-                self.handler._handle_file_created(new_file)
-            
-            # 削除されたファイルをチェック
-            deleted_files = self.known_files - current_files
-            for deleted_file in deleted_files:
-                logger.info(f"Polling detected deleted file: {deleted_file}")
-                with self.handler.lock:
-                    FeedGenerator.remove_music_file(deleted_file)
-                    self.handler.cleanup_file_tracking(deleted_file)
-                    self.handler.processed_files.discard(deleted_file)
-            
-            self.known_files = current_files
-            
+            st = os.stat(path)
+        except OSError:
+            return False
+        if st.st_size == 0:
+            return False
+        signature = (st.st_size, st.st_mtime)
+        previous = self._size_cache.get(path)
+        self._size_cache[path] = signature
+        if previous == signature:
+            return True
+        if time.time() - st.st_mtime >= self.debounce_seconds:
+            return True
+        return False
+
+    def _flush(self, pending: Dict[str, str]):
+        upserts = []
+        removes = []
+        defer: Dict[str, str] = {}
+
+        for path, kind in pending.items():
+            if kind == DELETED:
+                removes.append(path)
+                self._size_cache.pop(path, None)
+                self._defer_attempts.pop(path, None)
+                continue
+            # CHANGED
+            if not os.path.exists(path):
+                continue
+            if self._is_write_complete(path):
+                upserts.append(path)
+                self._size_cache.pop(path, None)
+                self._defer_attempts.pop(path, None)
+            else:
+                # まだ書き込み中 → 次のバッチで再評価(上限まで)
+                attempts = self._defer_attempts.get(path, 0) + 1
+                if attempts <= self.max_defer_attempts:
+                    self._defer_attempts[path] = attempts
+                    defer[path] = CHANGED
+                else:
+                    logger.warning(f"File write did not settle, giving up: {path}")
+                    self._size_cache.pop(path, None)
+                    self._defer_attempts.pop(path, None)
+
+        try:
+            if upserts or removes:
+                logger.info(f"Applying batch: {len(upserts)} upsert(s), {len(removes)} remove(s)")
+                FeedGenerator.apply_batch(upserts=upserts, removes=removes)
         except Exception as e:
-            logger.error(f"Error in polling: {e}")
-    
+            logger.error(f"Error applying batch: {e}")
+
+        # 書き込み未完了分は少し待ってから再投入する(busy-loop 防止)
+        if defer:
+            def requeue():
+                if not self._stop.wait(self.debounce_seconds):
+                    for path, kind in defer.items():
+                        self._enqueue(path, kind)
+            threading.Thread(target=requeue, name="feed-requeue", daemon=True).start()
+
+    # --- ライフサイクル ---
     def start(self):
-        """監視を開始（イベントベース + ポーリング）"""
         logger.info(f"Starting file watcher for directory: {self.watch_directory}")
-        logger.info(f"Polling interval: {self.polling_interval} seconds")
-        
-        # 初回スキャンで既存ファイルを記録
-        self.scan_for_new_files()
-        
-        # イベントベース監視を開始
-        self.observer.schedule(self.handler, self.watch_directory, recursive=True)
-        self.observer.start()
+        logger.info(f"Polling interval: {self.polling_interval}s, debounce: {self.debounce_seconds}s")
+
+        # 既知ファイルをインデックスのパス集合で初期化し、起動時の全件再処理を避ける
+        self._known_files = FeedGenerator.indexed_paths()
+
+        self._worker.start()
+        self._observer.schedule(self._handler, self.watch_directory, recursive=True)
+        self._observer.start()
+        self._poller.start()
         logger.info("File watcher started")
-        
+
         try:
-            while True:
-                time.sleep(self.polling_interval)
-                logger.debug("Running periodic scan...")
-                self.scan_for_new_files()
+            while not self._stop.is_set():
+                time.sleep(1)
         except KeyboardInterrupt:
             self.stop()
-    
+
     def stop(self):
-        """監視を停止"""
         logger.info("Stopping file watcher")
-        self.observer.stop()
-        self.observer.join()
+        self._stop.set()
+        try:
+            self._observer.stop()
+            self._observer.join(timeout=5)
+        except Exception:
+            pass
+        # ワーカーに残りを吐き出させてから停止
+        self._queue.put(_SHUTDOWN)
+        self._worker.join(timeout=10)
         logger.info("File watcher stopped")
 
+
 if __name__ == "__main__":
-    # 監視対象ディレクトリ
     watch_dir = FileIO.music_files_dir_path
-    
+
     # 初回起動時にフィード全体を生成
     logger.info("Generating initial feeds...")
     FeedGenerator.generate()
     logger.info("Initial feeds generated")
-    
-    # ファイル監視を開始（本番用ポーリング間隔: 30秒）
+
+    # ファイル監視を開始(本番用ポーリング間隔: 30秒)
     watcher = FileWatcher(watch_dir, polling_interval=30)
-    watcher.start() 
+    watcher.start()

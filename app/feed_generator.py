@@ -353,39 +353,63 @@ class FeedGenerator:
         cls._regenerate_all_feeds(index)
 
     @classmethod
+    def indexed_paths(cls) -> set:
+        """現在インデックスに載っている音楽ファイルのフルパス集合(ポーラ初期化用)。"""
+        return cls._get_index().all_paths()
+
+    @classmethod
     def add_music_file(cls, file_path: str):
-        """新しい音楽ファイルを追加し、フィードを差分更新する"""
+        """単一ファイルの追加(apply_batch への薄いラッパ)。"""
         logger.info(f"Adding music file: {file_path}")
-        index = cls._get_index()
-
-        # 重複チェック(O(1))
-        if index.contains(file_path):
-            logger.info(f"File already exists in index: {file_path}")
-            return
-
-        new_music_info = FileIO.build_music_info(file_path)
-        if new_music_info is None:
-            logger.warning(f"{file_path} was skipped (invalid music file)")
-            return
-
-        index.upsert(new_music_info)
-        index.save()
-        cls._update_album_feed(new_music_info.album_name, index)
-        cls._render_index(index)
+        cls.apply_batch(upserts=[file_path], removes=[])
 
     @classmethod
     def remove_music_file(cls, file_path: str):
-        """音楽ファイルを削除し、フィードを差分更新する"""
+        """単一ファイルの削除(apply_batch への薄いラッパ)。"""
         logger.info(f"Removing music file: {file_path}")
-        index = cls._get_index()
+        cls.apply_batch(upserts=[], removes=[file_path])
 
-        removed_music = index.remove(file_path)
-        if removed_music is None:
-            logger.info(f"File not found in index: {file_path}")
+    @classmethod
+    def apply_batch(cls, upserts: List[str], removes: List[str]):
+        """複数の追加/更新/削除を1回のバッチでまとめて反映する。
+
+        インデックス保存と index.html 再生成はバッチ全体で1回だけ行うため、
+        N 件の一括投入でも O(N) で済む(従来の per-file 保存による O(N^2) を解消)。
+        影響を受けたアルバムのフィードのみ再生成する。
+        """
+        index = cls._get_index()
+        affected_albums = set()
+        changed = False
+
+        # 削除を先に処理(同一バッチ内で削除→再追加が来た場合に追加が勝つ)
+        for path in removes:
+            removed = index.remove(path)
+            if removed is not None:
+                affected_albums.add(removed.album_name)
+                changed = True
+
+        for path in upserts:
+            new_music_info = FileIO.build_music_info(path)
+            if new_music_info is None:
+                logger.warning(f"{path} was skipped (invalid music file)")
+                continue
+            existing = index.get(path)
+            if existing == new_music_info:
+                # 内容に変化なし(spurious な変更イベント)→ 何もしない
+                continue
+            old_album = index.upsert(new_music_info)
+            if old_album:
+                affected_albums.add(old_album)  # 再タグ付けでアルバムが変わった場合の旧側
+            affected_albums.add(new_music_info.album_name)
+            changed = True
+
+        if not changed:
             return
 
+        # 保存と index.html 再生成はバッチで1回だけ
         index.save()
-        cls._update_album_feed(removed_music.album_name, index)
+        for album_name in affected_albums:
+            cls._update_album_feed(album_name, index)
         cls._render_index(index)
 
     @classmethod
