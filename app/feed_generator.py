@@ -4,7 +4,7 @@ import pathlib
 import logging
 import eyed3
 from datetime import datetime, timedelta, timezone
-from wsgiref.handlers import format_date_time
+from email.utils import format_datetime
 import glob
 from dataclasses import dataclass, field
 from itertools import groupby
@@ -112,16 +112,33 @@ class FileIO:
         return env.get_template(FileIO.index_html_template_filename)
 
     @staticmethod
+    def _atomic_write_text(path: str, text: str):
+        """テキストを原子的に書き出す(tempfile に書いて os.replace で差し替え)。
+
+        httpd が同じ htdocs を常時配信しているため、直接上書きすると書き込み途中の
+        空/不完全なファイルをクライアントが取得しうる。同一ディレクトリ内の一時ファイル
+        経由で差し替えることで、常に完全なファイルだけが見えるようにする。
+        """
+        dir_path = os.path.dirname(path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            # mkstemp は 0600 で作るため、httpd(www-data 等)が配信できるよう 0644 にする
+            os.chmod(tmp_path, 0o644)
+            os.replace(tmp_path, path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+
+    @staticmethod
     def output_feed_xml(xml_text: str, feed_info: FeedInfo):
-        xml_file_path = feed_info.file_path()
-        with open(xml_file_path, "w") as f:
-            f.write(xml_text)
+        FileIO._atomic_write_text(feed_info.file_path(), xml_text)
 
     @staticmethod
     def output_index_html(html_text: str):
-        html_file_path = FileIO.index_html_file_path
-        with open(html_file_path, "w") as f:
-            f.write(html_text)
+        FileIO._atomic_write_text(FileIO.index_html_file_path, html_text)
 
     @staticmethod
     def save_music_index(by_path: Dict[str, MusicInfo]):
@@ -307,6 +324,11 @@ class MusicIndex:
     def all_paths(self) -> set:
         return set(self._by_path.keys())
 
+    def mtimes(self) -> Dict[str, float]:
+        """fullpath -> mtime のスナップショット。items() を一括で取るため
+        途中で None を参照するレースが起きない。"""
+        return {path: mi.mtime for path, mi in list(self._by_path.items())}
+
     def __len__(self) -> int:
         return len(self._by_path)
 
@@ -331,7 +353,7 @@ class TemplateRenderer:
         for music_info in music_info_list:
             items.append({
                 "title": music_info.title,
-                "date_text_rfc1123": format_date_time(music_info.created_timestamp),
+                "date_text_rfc1123": format_datetime(datetime.fromtimestamp(music_info.created_timestamp, JST)),
                 "md5": music_info.md5(),
                 "duration_hhmmss": time.strftime('%H:%M:%S', time.gmtime(music_info.duration_seconds)),
                 "url": music_info.absolute_url,
@@ -386,15 +408,14 @@ class FeedGenerator:
         cls._regenerate_all_feeds(index)
 
     @classmethod
-    def indexed_paths(cls) -> set:
-        """現在インデックスに載っている音楽ファイルのフルパス集合(ポーラ初期化用)。"""
-        return cls._get_index().all_paths()
-
-    @classmethod
     def indexed_mtimes(cls) -> Dict[str, float]:
-        """fullpath -> 記録済み mtime のマップ(ポーラの再タグ付け検知用)。"""
+        """fullpath -> 記録済み mtime のマップ(ポーラ起動時の観測初期化用)。
+
+        起動時(スレッド起動前)に単一スレッドから呼ばれる前提。items() を一括で
+        スナップショットして None 参照のレースを避ける。
+        """
         index = cls._get_index()
-        return {path: index.get(path).mtime for path in index.all_paths()}
+        return index.mtimes()
 
     @classmethod
     def add_music_file(cls, file_path: str):

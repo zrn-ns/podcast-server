@@ -97,11 +97,16 @@ class FileWatcher:
         self._handler = _EnqueueHandler(self._enqueue)
         self._stop = threading.Event()
 
-        # ポーラスレッドのみが触る状態
-        self._known_files = set()
+        # ポーラスレッドのみが触る状態。fullpath -> 前回観測した mtime。
+        # ポーラが自前で観測値を持つことで、共有インデックスを跨スレッドで読まずに
+        # 新規/削除/再タグ付け(mtimeの進み)を検知する(ワーカー単独保有の不変条件を維持)。
+        self._seen_mtimes: Dict[str, float] = {}
         # ワーカースレッドのみが触る状態(ロック不要)
         self._size_cache: Dict[str, Tuple[int, float]] = {}
         self._defer_attempts: Dict[str, int] = {}
+        # ワーカーが最後にループを一周した時刻(ハング検知用ハートビートの素)。
+        # 別スレッドからは読むだけ(float の代入は GIL 下でアトミック)。
+        self._worker_progress_at = time.time()
 
         self._worker = threading.Thread(target=self._run_worker, name="feed-worker", daemon=True)
         self._poller = threading.Thread(target=self._run_poller, name="feed-poller", daemon=True)
@@ -112,35 +117,35 @@ class FileWatcher:
 
     # --- ポーリング(取りこぼし補完) ---
     def _scan_once(self):
-        current = set()
+        # 現在のディスク上の音楽ファイルと mtime を取得
+        current: Dict[str, float] = {}
         for extension in FileIO.music_extensions:
             pattern = os.path.join(self.watch_directory, f"**/*{extension}")
-            current.update(glob.glob(pattern, recursive=True))
+            for path in glob.glob(pattern, recursive=True):
+                try:
+                    current[path] = os.path.getmtime(path)
+                except OSError:
+                    continue
 
-        for new_path in current - self._known_files:
-            logger.info(f"Polling detected new file: {new_path}")
-            self._enqueue(new_path, CHANGED)
-        for gone_path in self._known_files - current:
+        seen = self._seen_mtimes
+
+        # 削除を検知
+        for gone_path in set(seen) - set(current):
             logger.info(f"Polling detected deleted file: {gone_path}")
             self._enqueue(gone_path, DELETED)
 
-        # 既存ファイルの内容変更(再タグ付け)を mtime の進みで検知する。
-        # watchdog のイベントが届かない環境(macOS の Docker ボリューム等)でも
-        # タグ修正を反映できるようにするための経路。
-        indexed_mtimes = FeedGenerator.indexed_mtimes()
-        for path in current & self._known_files:
-            stored = indexed_mtimes.get(path)
-            if stored is None:
-                continue
-            try:
-                disk_mtime = os.path.getmtime(path)
-            except OSError:
-                continue
-            if disk_mtime > stored + 1.0:  # 1秒の余裕で誤差を吸収
+        # 新規・内容変更(再タグ付け)を検知。ポーラ自前の観測 mtime と比較するため、
+        # インデックス未登録(タグ欠落等)のファイルでも後からのタグ修正を検知できる。
+        for path, mtime in current.items():
+            previous = seen.get(path)
+            if previous is None:
+                logger.info(f"Polling detected new file: {path}")
+                self._enqueue(path, CHANGED)
+            elif mtime > previous + 1.0:  # 1秒の余裕で誤差を吸収
                 logger.info(f"Polling detected modified file: {path}")
                 self._enqueue(path, CHANGED)
 
-        self._known_files = current
+        self._seen_mtimes = current
 
     def _run_poller(self):
         # polling_interval ごとにスキャン(stop がセットされたら即終了)
@@ -155,10 +160,14 @@ class FileWatcher:
         pending: Dict[str, str] = {}
         deadline = None
         while True:
+            # ループを一周するたびに進捗時刻を更新する。これがハートビートの素になり、
+            # ワーカーが apply_batch 等で恒久ブロックすると進捗が止まり unhealthy 化する。
+            self._worker_progress_at = time.time()
             if pending:
                 timeout = max(0.0, min(self.debounce_seconds, deadline - time.monotonic()))
             else:
-                timeout = None  # イベントが来るまでブロック
+                # アイドル時も heartbeat_interval ごとに必ず一周し、生存を示す
+                timeout = self.heartbeat_interval
             try:
                 item = self._queue.get(timeout=timeout)
             except queue.Empty:
@@ -262,8 +271,9 @@ class FileWatcher:
         logger.info(f"Starting file watcher for directory: {self.watch_directory}")
         logger.info(f"Polling interval: {self.polling_interval}s, debounce: {self.debounce_seconds}s")
 
-        # 既知ファイルをインデックスのパス集合で初期化し、起動時の全件再処理を避ける
-        self._known_files = FeedGenerator.indexed_paths()
+        # ポーラの観測 mtime をインデックスの記録値で初期化し、起動直後の全件再処理を避ける
+        # (スレッド起動前なのでインデックス読み取りは単一スレッドで安全)
+        self._seen_mtimes = FeedGenerator.indexed_mtimes()
 
         self._worker.start()
         self._observer.schedule(self._handler, self.watch_directory, recursive=True)
@@ -285,7 +295,13 @@ class FileWatcher:
                 if not self._observer.is_alive():
                     logger.error("observer thread died; shutting down to trigger restart")
                     break
-                self._write_heartbeat()
+                # ワーカーが直近で進捗していればハートビートを更新する。ワーカーが
+                # 生きていても apply_batch 等でハングして進捗が止まれば、ここで
+                # 更新が止まり HEALTHCHECK が unhealthy を返す(ハング型の片肺検知)。
+                if time.time() - self._worker_progress_at < self.heartbeat_interval * 3:
+                    self._write_heartbeat()
+                else:
+                    logger.error("worker appears stalled; heartbeat is not refreshed")
                 time.sleep(self.heartbeat_interval)
         except KeyboardInterrupt:
             pass
@@ -306,13 +322,39 @@ class FileWatcher:
         logger.info("File watcher stopped")
 
 
+def _heartbeat_during(stop_event, path, interval=10.0):
+    """generate() のように時間がかかる起動処理の間、ハートビートを更新し続ける。
+
+    曲数が多いと初回生成が長くかかり、その間ハートビートが古くなって HEALTHCHECK が
+    誤って unhealthy 判定するのを防ぐ。
+    """
+    while not stop_event.wait(interval):
+        try:
+            with open(path, "w") as f:
+                f.write(str(time.time()))
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
     watch_dir = FileIO.music_files_dir_path
 
-    # 初回起動時にフィード全体を生成
+    # 初回生成は曲数次第で時間がかかるため、その間もハートビートを更新しておく
+    try:
+        with open(HEARTBEAT_FILE, "w") as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass
+    _gen_stop = threading.Event()
+    _gen_hb = threading.Thread(target=_heartbeat_during, args=(_gen_stop, HEARTBEAT_FILE),
+                               name="startup-heartbeat", daemon=True)
+    _gen_hb.start()
+
     logger.info("Generating initial feeds...")
     FeedGenerator.generate()
     logger.info("Initial feeds generated")
+
+    _gen_stop.set()  # 起動用ハートビートを止め、以降はワーカー進捗ベースに切り替える
 
     # ファイル監視を開始(本番用ポーリング間隔: 30秒)
     watcher = FileWatcher(watch_dir, polling_interval=30)
