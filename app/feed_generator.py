@@ -6,7 +6,7 @@ import eyed3
 from datetime import datetime, timedelta, timezone
 from wsgiref.handlers import format_date_time
 import glob
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import groupby
 from jinja2 import Template, Environment, FileSystemLoader
 from typing import Any, Dict, List, Optional
@@ -36,8 +36,11 @@ class MusicInfo:
     duration_seconds: float = 0.0
     absolute_url: str = ""
     file_size_bytes: int = 0
-    created_timestamp: int = 0
+    created_timestamp: float = 0.0
     thumbnail_url: str = ""
+    # ファイルの最終更新時刻。変更検知(再タグ付け)に使うだけで、フィード内容の
+    # 同一性判定(__eq__)には含めない(compare=False)。
+    mtime: float = field(default=0.0, compare=False)
 
     def md5(self) -> str:
         return hashlib.md5(((self.album_name or "") + (self.title or "")).encode()).hexdigest()
@@ -150,7 +153,9 @@ class FileIO:
             logger.warning(f"music_index.pkl の読み込みに失敗、空で再構築します: {e}")
             return {}
 
-        # 旧形式(List[MusicInfo])との後方互換: dict へ変換する
+        # 旧形式(List[MusicInfo])との後方互換: dict へ変換する。
+        # なお mtime など後から追加したフィールドは dataclass のクラス既定値が
+        # フォールバックするため、旧バージョンの pickle でも 0.0 として読める。
         if isinstance(data, list):
             logger.info("旧形式(list)のインデックスを dict へ変換します")
             return {mi.fullpath: mi for mi in data}
@@ -176,6 +181,33 @@ class FileIO:
                         fo.write(image.image_data)
                 return f"{app_root_url}{FileIO.thumbnail_dir_name}/{filename}"
         return FileIO.default_thumbnail_url
+
+    @staticmethod
+    def _resolve_created_timestamp(file, fullpath: str) -> float:
+        """配信日時(pubDate)に使う安定したタイムスタンプを返す。
+
+        ID3 のリリース日タグを最優先し、無ければファイルの最終更新時刻(getmtime)を使う。
+        getctime はメタデータ変更で動いてしまい不安定なため使わない。
+        """
+        try:
+            best_date = file.tag.getBestDate()
+        except Exception:
+            best_date = None
+        if best_date is not None and getattr(best_date, "year", None):
+            try:
+                dt = datetime(
+                    best_date.year,
+                    best_date.month or 1,
+                    best_date.day or 1,
+                    best_date.hour or 0,
+                    best_date.minute or 0,
+                    best_date.second or 0,
+                    tzinfo=JST,
+                )
+                return dt.timestamp()
+            except (ValueError, TypeError):
+                pass
+        return os.path.getmtime(fullpath)
 
     @staticmethod
     def build_music_info(fullpath: str) -> Optional[MusicInfo]:
@@ -207,7 +239,8 @@ class FileIO:
             music_info.duration_seconds = file.info.time_secs if file.info else 0.0
             music_info.absolute_url = f"{app_root_url}{relative_path_escaped}"
             music_info.file_size_bytes = os.path.getsize(fullpath)
-            music_info.created_timestamp = os.path.getctime(fullpath)
+            music_info.created_timestamp = FileIO._resolve_created_timestamp(file, fullpath)
+            music_info.mtime = os.path.getmtime(fullpath)
             music_info.thumbnail_url = FileIO._extract_thumbnail_url(music_info, file.tag.images)
             return music_info
 
@@ -358,6 +391,12 @@ class FeedGenerator:
         return cls._get_index().all_paths()
 
     @classmethod
+    def indexed_mtimes(cls) -> Dict[str, float]:
+        """fullpath -> 記録済み mtime のマップ(ポーラの再タグ付け検知用)。"""
+        index = cls._get_index()
+        return {path: index.get(path).mtime for path in index.all_paths()}
+
+    @classmethod
     def add_music_file(cls, file_path: str):
         """単一ファイルの追加(apply_batch への薄いラッパ)。"""
         logger.info(f"Adding music file: {file_path}")
@@ -379,14 +418,14 @@ class FeedGenerator:
         """
         index = cls._get_index()
         affected_albums = set()
-        changed = False
+        index_dirty = False  # 保存が必要か(mtime同期のみでも True)
 
         # 削除を先に処理(同一バッチ内で削除→再追加が来た場合に追加が勝つ)
         for path in removes:
             removed = index.remove(path)
             if removed is not None:
                 affected_albums.add(removed.album_name)
-                changed = True
+                index_dirty = True
 
         for path in upserts:
             new_music_info = FileIO.build_music_info(path)
@@ -394,23 +433,30 @@ class FeedGenerator:
                 logger.warning(f"{path} was skipped (invalid music file)")
                 continue
             existing = index.get(path)
+            if existing is not None:
+                # 配信日時(pubDate)は一度確定したら保持する(再タグ付けで日時を揺らさない)
+                new_music_info.created_timestamp = existing.created_timestamp
             if existing == new_music_info:
-                # 内容に変化なし(spurious な変更イベント)→ 何もしない
+                # フィード内容に変化なし。mtime だけ同期してポーリングの再検知を止める
+                if existing is not None and existing.mtime != new_music_info.mtime:
+                    existing.mtime = new_music_info.mtime
+                    index_dirty = True
                 continue
             old_album = index.upsert(new_music_info)
             if old_album:
                 affected_albums.add(old_album)  # 再タグ付けでアルバムが変わった場合の旧側
             affected_albums.add(new_music_info.album_name)
-            changed = True
+            index_dirty = True
 
-        if not changed:
+        if not index_dirty:
             return
 
         # 保存と index.html 再生成はバッチで1回だけ
         index.save()
-        for album_name in affected_albums:
-            cls._update_album_feed(album_name, index)
-        cls._render_index(index)
+        if affected_albums:
+            for album_name in affected_albums:
+                cls._update_album_feed(album_name, index)
+            cls._render_index(index)
 
     @classmethod
     def _regenerate_all_feeds(cls, index: MusicIndex):
