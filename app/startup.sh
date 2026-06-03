@@ -2,6 +2,9 @@
 
 set -eu
 
+# venv の python を絶対パスで特定する(PATH/環境変数が引き継がれない環境でも確実に解決)
+VENV_PYTHON="${VIRTUAL_ENV:-/opt/venv}/bin/python3"
+
 cd /usr/local/apache2/htdocs/
 if [ ! -e "music_files" ]; then
     ln -s /volumes/music_files music_files
@@ -20,8 +23,10 @@ on_signal() {
 }
 trap on_signal TERM INT
 
-# ファイル監視システムをバックグラウンドで起動(ログは標準出力へ)
-python3 -B /usr/src/app/file_watcher.py 2>&1 &
+# ファイル監視システムをバックグラウンドで起動(ログは標準出力へ)。
+# venv の python を絶対パスで呼ぶ。NAS 等の一部ランタイムはイメージの ENV PATH を
+# 引き継がず、PATH 依存だと system python(watchdog 等が無い)に解決され起動失敗するため。
+"$VENV_PYTHON" -B /usr/src/app/file_watcher.py 2>&1 &
 watcher_pid=$!
 
 # httpd もバックグラウンドで起動し、両者を監視する
