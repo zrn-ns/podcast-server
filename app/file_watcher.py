@@ -94,6 +94,7 @@ class FileWatcher:
 
         self._queue: "queue.Queue" = queue.Queue()
         self._observer = Observer()
+        self._observer_ok = False  # watchdog のイベント監視が起動できたか
         self._handler = _EnqueueHandler(self._enqueue)
         self._stop = threading.Event()
 
@@ -276,11 +277,27 @@ class FileWatcher:
         self._seen_mtimes = FeedGenerator.indexed_mtimes()
 
         self._worker.start()
-        self._observer.schedule(self._handler, self.watch_directory, recursive=True)
-        self._observer.start()
+        # watchdog のイベント監視を試みる。大量のサブフォルダがあると inotify watch の
+        # 上限(fs.inotify.max_user_watches、NAS では低いことが多い)を超えて失敗するため、
+        # 失敗してもクラッシュさせず、ポーリングのみにフォールバックする。
+        try:
+            self._observer.schedule(self._handler, self.watch_directory, recursive=True)
+            self._observer.start()
+            self._observer_ok = True
+        except Exception as e:
+            self._observer_ok = False
+            logger.warning(
+                f"watchdog のイベント監視を開始できませんでした({e})。"
+                f"ポーリング(間隔 {self.polling_interval}s)のみで動作します。"
+                f"即時検知が必要なら fs.inotify.max_user_watches を増やしてください。"
+            )
+            try:
+                self._observer.stop()
+            except Exception:
+                pass
         self._poller.start()
         self._write_heartbeat()
-        logger.info("File watcher started")
+        logger.info(f"File watcher started (watchdog={'on' if self._observer_ok else 'off, polling-only'})")
 
         try:
             while not self._stop.is_set():
@@ -292,7 +309,8 @@ class FileWatcher:
                 if not self._poller.is_alive():
                     logger.error("poller thread died; shutting down to trigger restart")
                     break
-                if not self._observer.is_alive():
+                # observer は起動できた場合のみ死活監視する(ポーリングのみ動作時は無視)
+                if self._observer_ok and not self._observer.is_alive():
                     logger.error("observer thread died; shutting down to trigger restart")
                     break
                 # ワーカーが直近で進捗していればハートビートを更新する。ワーカーが
@@ -311,11 +329,12 @@ class FileWatcher:
     def stop(self):
         logger.info("Stopping file watcher")
         self._stop.set()
-        try:
-            self._observer.stop()
-            self._observer.join(timeout=5)
-        except Exception:
-            pass
+        if self._observer_ok:
+            try:
+                self._observer.stop()
+                self._observer.join(timeout=5)
+            except Exception:
+                pass
         # ワーカーに残りを吐き出させてから停止
         self._queue.put(_SHUTDOWN)
         self._worker.join(timeout=10)
