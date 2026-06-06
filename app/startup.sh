@@ -23,14 +23,21 @@ on_signal() {
 }
 trap on_signal TERM INT
 
-# ファイル監視システムをバックグラウンドで起動(ログは標準出力へ)。
+# 子プロセスは setsid で制御端末から切り離して起動する。
+# httpd は SIGWINCH を「グレースフル停止」の合図として解釈するため、コンテナに割り当て
+# られた TTY のウィンドウサイズ変更(ターミナル接続/DSMのUI操作等)で送られる SIGWINCH を
+# 受け取ると勝手に止まってしまう。新しいセッションに分離すれば TTY 由来の SIGWINCH/SIGHUP
+# が届かなくなる。setsid は(呼び出し元が pgroup リーダでないため)fork せず PID を保つので
+# $! でそのまま追跡・kill できる。
+
+# ファイル監視システムを起動(ログは標準出力へ)。
 # venv の python を絶対パスで呼ぶ。NAS 等の一部ランタイムはイメージの ENV PATH を
 # 引き継がず、PATH 依存だと system python(watchdog 等が無い)に解決され起動失敗するため。
-"$VENV_PYTHON" -B /usr/src/app/file_watcher.py 2>&1 &
+setsid "$VENV_PYTHON" -B /usr/src/app/file_watcher.py 2>&1 &
 watcher_pid=$!
 
-# httpd もバックグラウンドで起動し、両者を監視する
-httpd -D FOREGROUND &
+# httpd も setsid で起動し、両者を監視する
+setsid httpd -D FOREGROUND &
 httpd_pid=$!
 
 # 1秒ごとに両プロセスの生存とシグナル受信を確認する。
