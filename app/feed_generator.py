@@ -23,6 +23,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# eyed3 の無害な警告(Lame tag CRC check failed 等)でログが埋まるのを抑制する
+logging.getLogger("eyed3").setLevel(logging.ERROR)
+
 # アプリのルートURL(例: http://hogehoge.local:80/)
 app_root_url: str = os.environ["APP_ROOT_URL"]
 
