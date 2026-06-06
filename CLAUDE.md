@@ -49,7 +49,7 @@ mp3/m4a 追加・変更・削除
 
 - **ID3タグの `album` が必須**。無いファイルはスキップされインデックスに載らない（後からタグ付与してもポーリングの mtime 検知で拾われる）。`title` 欠落時はファイル名で代替。
 - 環境変数 `APP_ROOT_URL` が必須。RSS内のmp3・サムネイルへの絶対URL生成に使う（`feed_generator.py` 読み込み時に `os.environ` から取得、未設定だと起動失敗）。
-- インデックスは `music_index.pkl`（pickle、`Dict[fullpath, MusicInfo]`）。`MusicInfo` に**フィールドを追加する場合は dataclass のクラス既定値を必ず持たせる**（旧pickleはその既定値でフォールバックして読める）。`mtime` は `compare=False`（フィード同一性判定に含めず変更検知のトリガにのみ使う）。pubDate(`created_timestamp`)は一度確定したら `apply_batch` で保持する。
+- インデックスは `music_index.pkl`（pickle、`Dict[fullpath, MusicInfo]`）。`MusicInfo` に**フィールドを追加する場合は dataclass のクラス既定値を必ず持たせる**（旧pickleはその既定値でフォールバックして読める）。`mtime` は `compare=False`（フィード同一性判定に含めず変更検知のトリガにのみ使う）。pubDate(`created_timestamp`)は **(1)ID3の完全な日付(年月日が揃ったもの) → (2)ファイル名から抽出した日付(YYYYMMDD/YYYY-MM-DD/YYMMDD) → (3)mtime** の優先順で決定（`_resolve_created_timestamp`）。年のみのID3は不採用(全話が1/1になる弊害を避ける)。一度確定したら `apply_batch` で保持する。
 - 生成物（feeds配下のxml, thumbs, index.html）は htdocs に書き出される。リポジトリ上の `htdocs/` には `.gitkeep` とデフォルトサムネイル `music.png` のみ。
 - 配信されるファイルは world-readable(0644)である必要がある（`_atomic_write_text` は mkstemp の 0600 を 0644 に補正している）。
 - PID1 は `startup.sh`(bash)。`STOPSIGNAL SIGTERM`（httpd継承の SIGWINCH を上書き）で `docker stop` がgracefulに効く。

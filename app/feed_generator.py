@@ -15,6 +15,7 @@ import time
 import urllib.parse
 import pickle
 import tempfile
+import re
 
 # ロガー設定
 logging.basicConfig(
@@ -144,6 +145,24 @@ class FileIO:
         FileIO._atomic_write_text(FileIO.index_html_file_path, html_text)
 
     @staticmethod
+    def write_generating_placeholder():
+        """初回生成中に表示する「生成中」プレースホルダを index.html に書く。
+
+        曲数が多いと初回生成に数分かかるため、その間 httpd の既定ページではなく
+        分かりやすい案内を出す(自動再読込で完了後の一覧へ切り替わる)。
+        """
+        html = (
+            "<!DOCTYPE html>\n"
+            "<html lang=\"ja\"><head><meta charset=\"utf-8\">"
+            "<meta http-equiv=\"refresh\" content=\"15\">"
+            "<title>Podcast Server</title></head>\n"
+            "<body><h1>Podcast Server</h1>"
+            "<p>フィードを生成中です。しばらくお待ちください…"
+            "(このページは自動的に更新されます)</p></body></html>\n"
+        )
+        FileIO._atomic_write_text(FileIO.index_html_file_path, html)
+
+    @staticmethod
     def save_music_index(by_path: Dict[str, MusicInfo]):
         """インデックス(fullpath -> MusicInfo)を原子的に保存する。
 
@@ -203,22 +222,55 @@ class FileIO:
         return FileIO.default_thumbnail_url
 
     @staticmethod
+    def _valid_date_ts(year: int, month: int, day: int) -> Optional[float]:
+        """妥当な年月日なら JST 0:00 のエポックを返す。範囲外/不正なら None。"""
+        if not (2000 <= year <= 2099 and 1 <= month <= 12 and 1 <= day <= 31):
+            return None
+        try:
+            return datetime(year, month, day, tzinfo=JST).timestamp()
+        except ValueError:  # 2/30 等の存在しない日付
+            return None
+
+    @staticmethod
+    def _date_from_filename(fullpath: str) -> Optional[float]:
+        """ファイル名から配信日を推定する。例: EP063_20260528_.. / 20260606_.. / xxx260604xxx。
+
+        YYYYMMDD(区切り有無)を優先し、無ければ 6桁の YYMMDD(20YY と解釈)を拾う。
+        いずれも月日の妥当性を検証し、誤検出を避ける。
+        """
+        name = os.path.basename(fullpath)
+        # YYYY-MM-DD / YYYY_MM_DD / YYYY/MM/DD / YYYYMMDD (年は 20xx に限定)
+        for m in re.finditer(r"(20\d{2})[-_/.]?(\d{2})[-_/.]?(\d{2})", name):
+            ts = FileIO._valid_date_ts(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            if ts is not None:
+                return ts
+        # 区切り無しの 6桁 YYMMDD (前後が数字でない箇所のみ。20YY と解釈)
+        for m in re.finditer(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", name):
+            ts = FileIO._valid_date_ts(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            if ts is not None:
+                return ts
+        return None
+
+    @staticmethod
     def _resolve_created_timestamp(file, fullpath: str) -> float:
         """配信日時(pubDate)に使う安定したタイムスタンプを返す。
 
-        ID3 のリリース日タグを最優先し、無ければファイルの最終更新時刻(getmtime)を使う。
-        getctime はメタデータ変更で動いてしまい不安定なため使わない。
+        優先順: (1) ID3 に「年月日が揃った」日付がある場合はそれ、(2) ファイル名から
+        抽出した日付、(3) ファイルの最終更新時刻(getmtime)。
+        年のみ等の不完全な ID3 日付は採用しない(全話が 1/1 になる等の弊害があるため)。
+        getctime はメタデータ変更で動いて不安定なため使わない。
         """
+        # (1) ID3 の完全な日付(年・月・日が揃っているもの)
         try:
             best_date = file.tag.getBestDate()
         except Exception:
             best_date = None
-        if best_date is not None and getattr(best_date, "year", None):
+        if best_date is not None and best_date.year and best_date.month and best_date.day:
             try:
                 dt = datetime(
                     best_date.year,
-                    best_date.month or 1,
-                    best_date.day or 1,
+                    best_date.month,
+                    best_date.day,
                     best_date.hour or 0,
                     best_date.minute or 0,
                     best_date.second or 0,
@@ -227,6 +279,13 @@ class FileIO:
                 return dt.timestamp()
             except (ValueError, TypeError):
                 pass
+
+        # (2) ファイル名から抽出した日付
+        from_name = FileIO._date_from_filename(fullpath)
+        if from_name is not None:
+            return from_name
+
+        # (3) ファイルの最終更新時刻
         return os.path.getmtime(fullpath)
 
     @staticmethod
@@ -403,6 +462,10 @@ class FeedGenerator:
     @classmethod
     def generate(cls):
         """初回起動時の全体生成。インデックスをメモリ上に構築して保存する。"""
+        # 既存の index.html が無い(初回/コンテナ再作成)場合のみ、生成中プレースホルダを出す。
+        # 既に本物の index.html がある(再起動)場合は、生成完了まで従来の一覧を出し続ける。
+        if not os.path.exists(FileIO.index_html_file_path):
+            FileIO.write_generating_placeholder()
         index = MusicIndex()
         for music_info in FileIO.get_music_list():
             index.upsert(music_info)
