@@ -31,6 +31,10 @@ COPY app/ /usr/src/app/
 # 配信に必要なファイルをコピー
 COPY htdocs /usr/local/apache2/htdocs
 
+# httpd ベースイメージ同梱の既定ページ(It works!)を削除する。
+# 初回生成完了までは feed_generator が生成中プレースホルダを出すため不要。
+RUN rm -f /usr/local/apache2/htdocs/index.html
+
 # tell the port number the container should expose
 EXPOSE 80
 
